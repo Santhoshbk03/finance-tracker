@@ -17,12 +17,13 @@ export async function loginAction(prevState: { error: string }, formData: FormDa
 
   const token = await createToken(username);
   const cookieStore = await cookies();
+
   cookieStore.set('auth-token', token, {
     httpOnly: true,
-    secure: false,          // allow HTTP on local network
+    secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/',
-    maxAge: 60 * 60 * 24 * 7, // 7 days
+    maxAge: 60 * 60 * 24 * 7,
   });
 
   redirect('/');
