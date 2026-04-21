@@ -1,0 +1,24 @@
+{
+  "id": "/",
+  "name": "FinanceTrack – Loan Manager",
+  "short_name": "FinanceTrack",
+  "description": "Personal loan & daily/weekly collection tracker",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "background_color": "#f5f7fa",
+  "theme_color": "#065f46",
+  "orientation": "portrait-primary",
+  "categories": ["finance", "business"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "New Loan", "url": "/loans/new", "description": "Create a new loan" },
+    { "name": "Dashboard", "url": "/", "description": "View dashboard" }
+  ]
+}
