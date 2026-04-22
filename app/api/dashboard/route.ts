@@ -91,7 +91,8 @@ export async function GET() {
         // Overdue: past due, not fully paid
         if (p.dueDate < today && p.paidAmount < p.expectedAmount && overduePayments.length < 20) {
           overduePayments.push({
-            id: p.id, loanId: loan.id, ...p,
+            ...p,
+            id: p.id, loanId: loan.id,
             customer_name: loan.customerName, customer_phone: loan.customerPhone,
             principal: loan.principal, planType: loan.planType,
           });
@@ -100,7 +101,8 @@ export async function GET() {
         // Due soon: today → +6 days, not fully paid
         if (p.dueDate >= today && p.dueDate <= weekEnd && p.paidAmount < p.expectedAmount && dueSoon.length < 20) {
           dueSoon.push({
-            id: p.id, loanId: loan.id, ...p,
+            ...p,
+            id: p.id, loanId: loan.id,
             customer_name: loan.customerName, customer_phone: loan.customerPhone,
             principal: loan.principal, planType: loan.planType,
           });
@@ -123,7 +125,8 @@ export async function GET() {
         // Recent activity
         if (p.paidDate) {
           recentPayments.push({
-            id: p.id, loanId: loan.id, ...p,
+            ...p,
+            id: p.id, loanId: loan.id,
             customer_name: loan.customerName, principal: loan.principal,
           });
         }

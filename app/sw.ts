@@ -1,3 +1,4 @@
+/// <reference lib="webworker" />
 import { defaultCache } from '@serwist/next/worker';
 import { Serwist } from 'serwist';
 

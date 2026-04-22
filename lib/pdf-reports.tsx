@@ -6,6 +6,7 @@
  *   3. Weekly Report — last 7 days summary
  */
 import React from 'react';
+import type { DocumentProps } from '@react-pdf/renderer';
 import {
   Document, Page, Text, View, StyleSheet, renderToBuffer,
 } from '@react-pdf/renderer';
@@ -733,5 +734,5 @@ export function buildWeeklyReportData(
 // ─── Render helpers ──────────────────────────────────────────────────────
 export async function renderPdfToBuffer(element: React.ReactElement): Promise<Buffer> {
   // @react-pdf returns a Node Buffer server-side
-  return await renderToBuffer(element);
+  return await renderToBuffer(element as React.ReactElement<DocumentProps>);
 }

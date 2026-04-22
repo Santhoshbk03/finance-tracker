@@ -11,12 +11,12 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     if (!customer) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
     const loansSnap = await adminDb.collection('loans').where('customerId', '==', id).get();
-    const loans: Loan[] = loansSnap.docs.map(d => ({ id: d.id, ...(d.data() as Loan) }));
+    const loans: Loan[] = loansSnap.docs.map(d => ({ ...(d.data() as Loan), id: d.id }));
 
     // Fetch all payments in parallel
     const loanWithPayments = await Promise.all(loans.map(async (loan) => {
       const pSnap = await adminDb.collection('loans').doc(loan.id).collection('payments').get();
-      const payments: Payment[] = pSnap.docs.map(d => ({ id: d.id, loanId: loan.id, ...(d.data() as Payment) }));
+      const payments: Payment[] = pSnap.docs.map(d => ({ ...(d.data() as Payment), id: d.id, loanId: loan.id }));
       return { loan, payments };
     }));
 

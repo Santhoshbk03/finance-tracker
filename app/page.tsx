@@ -505,7 +505,7 @@ export default function DashboardPage() {
                 <YAxis tick={{ fontSize: 10, fill: 'rgba(255,255,255,0.35)' }} axisLine={false} tickLine={false}
                   tickFormatter={v => v >= 1000 ? (v / 1000).toFixed(0) + 'k' : v} />
                 <Tooltip
-                  formatter={(v: any, name: string) => [fmtFull(Number(v)), name === 'expected' ? 'Expected' : 'Collected']}
+                  formatter={(v, name) => [fmtFull(Number(v)), name === 'expected' ? 'Expected' : 'Collected']}
                   contentStyle={{
                     borderRadius: 12, border: '1px solid rgba(139,92,246,0.3)',
                     background: 'rgba(18,18,26,0.95)', color: '#F0F0FF', fontSize: 12,

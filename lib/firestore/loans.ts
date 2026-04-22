@@ -54,13 +54,13 @@ export async function getLoansAdmin(filters?: { status?: string; customerId?: st
   if (filters?.customerId) q = q.where('customerId', '==', filters.customerId);
   q = q.orderBy('createdAt', 'desc');
   const snap = await q.get();
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() } as Loan));
+  return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Loan));
 }
 
 export async function getLoanAdmin(id: string): Promise<Loan | null> {
   const snap = await adminDb.collection('loans').doc(id).get();
   if (!snap.exists) return null;
-  return { id: snap.id, ...snap.data() } as Loan;
+  return { ...snap.data(), id: snap.id } as Loan;
 }
 
 export async function createLoanAdmin(
@@ -89,7 +89,7 @@ export async function createLoanAdmin(
   // Update stats aggregate
   await updateStatsOnLoanCreate(loanData);
 
-  return { id: loanRef.id, ...loanData, createdAt: now, updatedAt: now };
+  return { ...loanData, id: loanRef.id, createdAt: now, updatedAt: now };
 }
 
 export async function updateLoanAdmin(id: string, data: Partial<Loan>): Promise<void> {
@@ -112,7 +112,7 @@ export async function deleteLoanAdmin(id: string): Promise<void> {
 export async function getPaymentsAdmin(loanId: string): Promise<Payment[]> {
   const snap = await adminDb.collection('loans').doc(loanId).collection('payments')
     .orderBy('periodNumber', 'asc').get();
-  return snap.docs.map((d) => ({ id: d.id, loanId, ...d.data() } as Payment));
+  return snap.docs.map((d) => ({ ...d.data(), id: d.id, loanId } as Payment));
 }
 
 export async function updatePaymentAdmin(
@@ -134,8 +134,8 @@ export async function getAllActiveLoansWithPayments() {
   for (const loanDoc of loansSnap.docs) {
     const paymentsSnap = await adminDb.collection('loans').doc(loanDoc.id).collection('payments').get();
     result.push({
-      loan: { id: loanDoc.id, ...(loanDoc.data() as Loan) },
-      payments: paymentsSnap.docs.map(p => ({ id: p.id, ...(p.data() as Payment) })),
+      loan: { ...(loanDoc.data() as Loan), id: loanDoc.id },
+      payments: paymentsSnap.docs.map(p => ({ ...(p.data() as Payment), id: p.id })),
     });
   }
   return result;
@@ -148,8 +148,8 @@ export async function getAllLoansWithPayments() {
   for (const loanDoc of loansSnap.docs) {
     const paymentsSnap = await adminDb.collection('loans').doc(loanDoc.id).collection('payments').get();
     result.push({
-      loan: { id: loanDoc.id, ...(loanDoc.data() as Loan) },
-      payments: paymentsSnap.docs.map(p => ({ id: p.id, ...(p.data() as Payment) })),
+      loan: { ...(loanDoc.data() as Loan), id: loanDoc.id },
+      payments: paymentsSnap.docs.map(p => ({ ...(p.data() as Payment), id: p.id })),
     });
   }
   return result;
@@ -163,8 +163,8 @@ export async function getOverduePaymentsAdmin(today: string, limit = 20) {
     for (const payment of payments) {
       if (payment.dueDate < today && payment.paidAmount < payment.expectedAmount) {
         results.push({
-          id: payment.id, loanId: loan.id,
           ...payment,
+          id: payment.id, loanId: loan.id,
           customer_name: loan.customerName,
           customer_phone: loan.customerPhone,
           principal: loan.principal,
@@ -187,8 +187,8 @@ export async function getDueSoonAdmin(today: string, weekEnd: string, limit = 20
     for (const payment of payments) {
       if (payment.dueDate >= today && payment.dueDate <= weekEnd && payment.paidAmount < payment.expectedAmount) {
         results.push({
-          id: payment.id, loanId: loan.id,
           ...payment,
+          id: payment.id, loanId: loan.id,
           customer_name: loan.customerName,
           customer_phone: loan.customerPhone,
           principal: loan.principal,
