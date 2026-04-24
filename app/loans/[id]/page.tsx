@@ -207,51 +207,94 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
   const [notes, setNotes] = useState('');
   const [showDelete, setShowDelete] = useState(false);
   const [markingInterest, setMarkingInterest] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
 
-  const fetchLoan = useCallback(() => {
-    setLoading(true);
-    fetch(`/api/loans/${id}`)
-      .then(r => r.json())
-      .then(d => { if (!d.error) { setLoan(d); setNotes(d.notes || ''); } })
-      .catch(console.error)
-      .finally(() => setLoading(false));
+  const flash = (type: 'success' | 'error', msg: string) => {
+    setToast({ type, msg });
+    setTimeout(() => setToast(null), 2600);
+  };
+
+  // First load uses `loading` (shows skeleton); refreshes after mutations don't (avoids full-screen flicker)
+  const fetchLoan = useCallback(async (showSpinner = false) => {
+    if (showSpinner) setLoading(true);
+    try {
+      const r = await fetch(`/api/loans/${id}`);
+      const d = await r.json();
+      if (!d.error) { setLoan(d); setNotes(d.notes || ''); }
+    } catch (e) {
+      console.error(e);
+      flash('error', 'Failed to load loan');
+    } finally {
+      if (showSpinner) setLoading(false);
+    }
   }, [id]);
 
-  useEffect(() => { fetchLoan(); }, [fetchLoan]);
+  useEffect(() => { fetchLoan(true); }, [fetchLoan]);
 
   const handlePaymentUpdate = async (paymentId: string, paid_amount: number, paid_date: string, paymentNotes: string) => {
-    await fetch(`/api/payments/${paymentId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paid_amount, paid_date, notes: paymentNotes }),
-    });
-    fetchLoan();
+    try {
+      const res = await fetch(`/api/payments/${paymentId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paid_amount, paid_date, notes: paymentNotes, loan_id: id }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `HTTP ${res.status}`);
+      }
+      flash('success', paid_amount > 0 ? 'Payment recorded' : 'Payment cleared');
+      await fetchLoan();
+    } catch (e) {
+      flash('error', e instanceof Error ? e.message : 'Failed to save');
+      throw e;
+    }
   };
 
   const handleSaveNotes = async () => {
-    await fetch(`/api/loans/${id}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notes }),
-    });
-    setEditNotes(false);
-    fetchLoan();
+    try {
+      const res = await fetch(`/api/loans/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      setEditNotes(false);
+      flash('success', 'Notes saved');
+      await fetchLoan();
+    } catch {
+      flash('error', 'Failed to save notes');
+    }
   };
 
   const handleDelete = async () => {
-    const res = await fetch(`/api/loans/${id}`, { method: 'DELETE' });
-    if (res.ok) router.push('/loans');
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/loans/${id}`, { method: 'DELETE' });
+      if (res.ok) router.push('/loans');
+      else { flash('error', 'Failed to delete'); setDeleting(false); }
+    } catch {
+      flash('error', 'Failed to delete');
+      setDeleting(false);
+    }
   };
 
   const handleToggleInterest = async () => {
     if (!loan) return;
     setMarkingInterest(true);
-    const current = loan.interestCollected ?? Boolean(loan.interest_collected);
-    await fetch(`/api/loans/${id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ interest_collected: !current }),
-    });
-    setMarkingInterest(false);
-    fetchLoan();
+    try {
+      const current = loan.interestCollected ?? Boolean(loan.interest_collected);
+      const res = await fetch(`/api/loans/${id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interest_collected: !current }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      flash('success', current ? 'Interest undone' : 'Interest marked collected');
+      await fetchLoan();
+    } catch {
+      flash('error', 'Failed to update interest');
+    } finally {
+      setMarkingInterest(false);
+    }
   };
 
   if (loading) return (
@@ -485,13 +528,43 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
               All payment records will be permanently deleted.
             </p>
             <div className="flex gap-3">
-              <button onClick={() => setShowDelete(false)} className="btn-ghost flex-1 justify-center py-3">Cancel</button>
-              <button onClick={handleDelete}
-                className="flex-1 py-3 rounded-xl font-semibold text-sm text-white transition-all hover:brightness-110"
+              <button onClick={() => setShowDelete(false)} disabled={deleting} className="btn-ghost flex-1 justify-center py-3 disabled:opacity-50">Cancel</button>
+              <button onClick={handleDelete} disabled={deleting}
+                className="flex-1 py-3 rounded-xl font-semibold text-sm text-white transition-all hover:brightness-110 disabled:opacity-60 flex items-center justify-center gap-2"
                 style={{ background: 'var(--red)', boxShadow: '0 4px 16px var(--glow-red)' }}>
-                Delete
+                {deleting ? (
+                  <>
+                    <span className="w-3.5 h-3.5 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                    Deleting…
+                  </>
+                ) : 'Delete'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[60] pointer-events-none animate-in fade-in slide-in-from-bottom-4 duration-200">
+          <div className="px-4 py-3 rounded-xl shadow-2xl flex items-center gap-2.5 text-sm font-medium max-w-[90vw]"
+            style={{
+              background: toast.type === 'success'
+                ? 'linear-gradient(135deg, rgba(16,185,129,0.95), rgba(5,150,105,0.95))'
+                : 'linear-gradient(135deg, rgba(244,63,94,0.95), rgba(225,29,72,0.95))',
+              color: '#fff',
+              border: toast.type === 'success'
+                ? '1px solid rgba(16,185,129,0.4)'
+                : '1px solid rgba(244,63,94,0.4)',
+              backdropFilter: 'blur(12px)',
+              boxShadow: toast.type === 'success'
+                ? '0 12px 40px rgba(16,185,129,0.35)'
+                : '0 12px 40px rgba(244,63,94,0.35)',
+            }}>
+            {toast.type === 'success'
+              ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+              : <AlertTriangle className="w-4 h-4 flex-shrink-0" />}
+            <span>{toast.msg}</span>
           </div>
         </div>
       )}

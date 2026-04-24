@@ -1,12 +1,12 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, Users, Plus, CreditCard, FileText } from 'lucide-react';
+import { Home, Users, CreditCard, FileText, IndianRupee } from 'lucide-react';
 
 const NAV = [
   { href: '/', icon: Home, label: 'Home' },
   { href: '/customers', icon: Users, label: 'Borrowers' },
-  { href: '/loans/new', icon: Plus, label: 'New', fab: true },
+  { href: '/collect', icon: IndianRupee, label: 'Collect', fab: true },
   { href: '/loans', icon: CreditCard, label: 'Loans' },
   { href: '/reports', icon: FileText, label: 'Reports' },
 ];
@@ -28,14 +28,19 @@ export default function BottomNav() {
 
           if (fab) {
             return (
-              <Link key={href} href={href}
-                className="relative -top-4 w-14 h-14 rounded-2xl flex items-center justify-center transition-all active:scale-95 pulse-glow"
+              <Link key={href} href={href} aria-label={label}
+                className="relative -top-4 w-14 h-14 rounded-2xl flex flex-col items-center justify-center transition-all active:scale-95 pulse-glow"
                 style={{
-                  background: 'linear-gradient(135deg, var(--purple) 0%, var(--violet) 100%)',
-                  boxShadow: '0 4px 20px rgba(109,40,217,0.5)',
-                  border: '1px solid rgba(139,92,246,0.5)',
+                  background: active
+                    ? 'linear-gradient(135deg, var(--green) 0%, #059669 100%)'
+                    : 'linear-gradient(135deg, var(--purple) 0%, var(--violet) 100%)',
+                  boxShadow: active
+                    ? '0 4px 20px rgba(16,185,129,0.5)'
+                    : '0 4px 20px rgba(109,40,217,0.5)',
+                  border: '1px solid rgba(255,255,255,0.15)',
                 }}>
                 <Icon className="w-6 h-6 text-white" strokeWidth={2.5} />
+                <span className="text-[9px] font-bold text-white/90 -mt-0.5">{label}</span>
               </Link>
             );
           }

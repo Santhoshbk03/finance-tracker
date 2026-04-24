@@ -49,12 +49,29 @@ export interface Payment {
 // ─── Loans ───────────────────────────────────────────────────────────────────
 
 export async function getLoansAdmin(filters?: { status?: string; customerId?: string }): Promise<Loan[]> {
+  // Note: we intentionally avoid combining `where(...)` with `orderBy('createdAt')`
+  // because that requires a Firestore composite index. Instead, we apply ONE
+  // equality filter in the query (the more selective one) and sort in memory.
+  // Volume per customer is small (dozens, not thousands), so this is free.
   let q = adminDb.collection('loans') as FirebaseFirestore.Query;
-  if (filters?.status) q = q.where('status', '==', filters.status);
-  if (filters?.customerId) q = q.where('customerId', '==', filters.customerId);
-  q = q.orderBy('createdAt', 'desc');
+  if (filters?.customerId) {
+    q = q.where('customerId', '==', filters.customerId);
+  } else if (filters?.status) {
+    q = q.where('status', '==', filters.status);
+  } else {
+    q = q.orderBy('createdAt', 'desc');
+  }
   const snap = await q.get();
-  return snap.docs.map((d) => ({ ...d.data(), id: d.id } as Loan));
+  let loans = snap.docs.map((d) => ({ ...d.data(), id: d.id } as Loan));
+  // Apply any remaining filter in memory
+  if (filters?.customerId && filters?.status) {
+    loans = loans.filter((l) => l.status === filters.status);
+  }
+  // Sort by createdAt desc in memory when we couldn't use orderBy
+  if (filters?.customerId || filters?.status) {
+    loans.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }
+  return loans;
 }
 
 export async function getLoanAdmin(id: string): Promise<Loan | null> {

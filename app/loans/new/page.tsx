@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   ArrowLeft, IndianRupee, Calendar, User, CalendarDays,
@@ -23,7 +23,42 @@ function todayStr() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+function NewLoanFallback() {
+  return (
+    <div className="pb-28 min-h-screen" style={{ background: 'var(--bg)' }}>
+      <div className="sticky top-0 z-20 px-4 py-3 flex items-center gap-3"
+        style={{ background: 'rgba(10,10,15,0.85)', backdropFilter: 'blur(20px)', borderBottom: '1px solid var(--glass-border)' }}>
+        <Link href="/loans" className="w-9 h-9 rounded-full flex items-center justify-center"
+          style={{ background: 'var(--glass-bg-2)', border: '1px solid var(--glass-border)' }}>
+          <ArrowLeft className="w-4 h-4" style={{ color: 'var(--text)' }} />
+        </Link>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs" style={{ color: 'var(--muted)' }}>Create</p>
+          <h1 className="text-base font-bold" style={{ color: 'var(--text)' }}>New Loan</h1>
+        </div>
+      </div>
+      <div className="p-4 max-w-2xl mx-auto space-y-4">
+        {[1, 2, 3, 4, 5].map(i => (
+          <div key={i} className="card animate-pulse" style={{ height: i === 1 ? 56 : 120 }} />
+        ))}
+        <div className="flex items-center justify-center py-4 gap-2" style={{ color: 'var(--muted)' }}>
+          <Loader2 className="w-4 h-4 animate-spin" />
+          <span className="text-sm">Loading…</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function NewLoanPage() {
+  return (
+    <Suspense fallback={<NewLoanFallback />}>
+      <NewLoanForm />
+    </Suspense>
+  );
+}
+
+function NewLoanForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const prefilledCustomerId = searchParams.get('customerId') || '';
@@ -49,7 +84,12 @@ export default function NewLoanPage() {
   const [skipDays, setSkipDays] = useState<number[]>([]); // for daily
 
   useEffect(() => {
-    fetch('/api/customers').then(r => r.json()).then(setCustomers).catch(console.error);
+    fetch('/api/customers')
+      .then(async (r) => {
+        const d = await r.json().catch(() => null);
+        setCustomers(Array.isArray(d) ? d : []);
+      })
+      .catch((e) => { console.error(e); setCustomers([]); });
   }, []);
 
   function switchPlan(type: 'weekly' | 'daily') {

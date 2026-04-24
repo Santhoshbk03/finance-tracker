@@ -131,10 +131,31 @@ function LoansContent() {
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<'all' | 'active' | 'completed'>('all');
 
+  const [error, setError] = useState<string | null>(null);
+
   useEffect(() => {
     const url = customerIdFilter ? `/api/loans?customer_id=${customerIdFilter}` : '/api/loans';
     setLoading(true);
-    fetch(url).then(r => r.json()).then(setLoans).catch(console.error).finally(() => setLoading(false));
+    setError(null);
+    fetch(url)
+      .then(async (r) => {
+        const d = await r.json().catch(() => null);
+        if (!r.ok || !Array.isArray(d)) {
+          const msg = (d && typeof d === 'object' && 'error' in d && typeof d.error === 'string')
+            ? d.error
+            : `HTTP ${r.status}`;
+          setError(msg);
+          setLoans([]);
+          return;
+        }
+        setLoans(d);
+      })
+      .catch((e) => {
+        console.error(e);
+        setError(e instanceof Error ? e.message : 'Network error');
+        setLoans([]);
+      })
+      .finally(() => setLoading(false));
   }, [customerIdFilter]);
 
   const filtered = loans
@@ -230,6 +251,17 @@ function LoansContent() {
                 </div>
               </div>
             ))}
+          </div>
+        ) : error ? (
+          <div className="card p-8 text-center" style={{ borderColor: 'rgba(244,63,94,0.25)' }}>
+            <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3"
+              style={{ background: 'rgba(244,63,94,0.1)' }}>
+              <AlertTriangle className="w-6 h-6" style={{ color: 'var(--red)' }} />
+            </div>
+            <p className="font-semibold text-sm mb-1" style={{ color: 'var(--text)' }}>Couldn&apos;t load loans</p>
+            <p className="text-xs mb-4" style={{ color: 'var(--muted)' }}>{error}</p>
+            <button onClick={() => window.location.reload()}
+              className="btn-primary mx-auto text-sm">Retry</button>
           </div>
         ) : filtered.length === 0 ? (
           <div className="card p-12 text-center">

@@ -251,8 +251,8 @@ export default function DashboardPage() {
                   {overdueCount}
                 </span>
               </h3>
-              <Link href="/loans" className="text-xs flex items-center gap-0.5" style={{ color: 'var(--muted)' }}>
-                All <ArrowUpRight className="w-3 h-3" />
+              <Link href="/collect?tab=overdue" className="text-xs flex items-center gap-0.5 font-semibold" style={{ color: 'var(--red)' }}>
+                Collect <ArrowUpRight className="w-3 h-3" />
               </Link>
             </div>
             <div className="max-h-[360px] overflow-y-auto">
@@ -340,10 +340,10 @@ export default function DashboardPage() {
                   );
                 })}
               </div>
-              <Link href="/reports"
+              <Link href="/collect"
                 className="flex items-center justify-center gap-1 px-4 py-2.5 text-xs font-semibold transition-colors hover:bg-white/[0.03]"
-                style={{ borderTop: '1px solid var(--glass-border)', color: 'var(--muted)' }}>
-                Open today&apos;s collection list <ArrowUpRight className="w-3 h-3" />
+                style={{ borderTop: '1px solid var(--glass-border)', color: 'var(--purple)' }}>
+                Quick collect — mark payments <ArrowUpRight className="w-3 h-3" />
               </Link>
             </div>
           );

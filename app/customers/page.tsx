@@ -89,7 +89,13 @@ export default function CustomersPage() {
 
   const fetchCustomers = () => {
     setLoading(true);
-    fetch('/api/customers').then(r => r.json()).then(setCustomers).catch(console.error).finally(() => setLoading(false));
+    fetch('/api/customers')
+      .then(async (r) => {
+        const d = await r.json().catch(() => null);
+        setCustomers(Array.isArray(d) ? d : []);
+      })
+      .catch((e) => { console.error(e); setCustomers([]); })
+      .finally(() => setLoading(false));
   };
   useEffect(() => { fetchCustomers(); }, []);
 
