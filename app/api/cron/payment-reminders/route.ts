@@ -3,7 +3,7 @@
  * WhatsApps each customer whose payment is due today.
  */
 import { NextRequest } from 'next/server';
-import { getAllActiveLoansWithPayments } from '@/lib/firestore/loans';
+import { getAllActiveLoansWithPayments } from '@/lib/db/loans';
 import { sendWhatsAppReminder } from '@/lib/whatsapp';
 import { localDateStr } from '@/lib/calculations';
 

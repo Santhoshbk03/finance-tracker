@@ -5,9 +5,11 @@
  *  - Interest is collected UPFRONT on the loan start date
  *  - Customer repays PRINCIPAL ONLY over the agreed plan period
  *  - Weekly plan: weekly_amount = principal / total_weeks
- *  - Daily plan:  daily_amount  = principal / total_days
- *  - interest_amount = principal × rate × ceil(periods/4) / 100
- *    (periods = weeks for weekly, days/7 for daily — both round up to months)
+ *                 interest_amount = principal × rate × ceil(weeks/4) / 100
+ *                 (e.g. 10-week loan at 4%/month = 12% flat of principal)
+ *  - Daily plan:  daily_amount = principal / total_days
+ *                 interest_amount = principal × 12.5% × (days/100)
+ *                 (standard 100-day scheme: 1L → 12,500 upfront, 1,000/day × 100)
  */
 
 /** Format a local Date as YYYY-MM-DD without timezone shift (IST-safe) */
@@ -79,14 +81,24 @@ export function generateWeeklySchedule(
 
 // ─── Daily Plan ──────────────────────────────────────────────────────────────
 
+/**
+ * The standard Indian "100-day daily loan" scheme charges 12.5% flat upfront on
+ * the principal (1L → 12,500; 50k → 6,250). For non-standard terms we scale
+ * linearly so a 50-day loan is 6.25%, a 200-day loan is 25%, etc.
+ *
+ * `interestRatePerMonth` is retained for API compatibility but intentionally
+ * ignored for the daily plan — the 12.5% flat rate IS the daily convention.
+ */
+export const DAILY_FLAT_RATE_PER_100_DAYS = 12.5;
+
 export function calculateDailyLoan(
   principal: number,
-  interestRatePerMonth: number = 4,
+  _interestRatePerMonth: number = 4,
   loanTermDays: number = 100
 ) {
-  // Convert days to months (round up to nearest month) for interest
-  const months = Math.ceil(loanTermDays / 30);
-  const interestAmount = Math.round((principal * interestRatePerMonth * months) / 100 * 100) / 100;
+  const interestAmount = Math.round(
+    (principal * DAILY_FLAT_RATE_PER_100_DAYS * loanTermDays) / 100 / 100 * 100
+  ) / 100;
   const dailyAmount = Math.round((principal / loanTermDays) * 100) / 100;
 
   return {

@@ -1,5 +1,6 @@
 import { adminDb } from '@/lib/firebase-admin';
 import { localDateStr } from '@/lib/calculations';
+import { unstable_cache, revalidateTag } from 'next/cache';
 
 export type PlanType = 'weekly' | 'daily';
 
@@ -44,6 +45,18 @@ export interface Payment {
   notes: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ─── Cache tags ──────────────────────────────────────────────────────────────
+// Any Firestore read that goes through a cached wrapper in this file is tagged
+// with LOANS_TAG. Mutations call `invalidateLoansCache()` to force re-reads.
+// This is the ONLY thing standing between us and the 50K/day read quota.
+export const LOANS_TAG = 'loans-data';
+
+export function invalidateLoansCache() {
+  // expire:0 → immediate invalidation. Required because right after a mutation
+  // (e.g. payment collected) the user expects the next read to reflect it.
+  revalidateTag(LOANS_TAG, { expire: 0 });
 }
 
 // ─── Loans ───────────────────────────────────────────────────────────────────
@@ -105,6 +118,7 @@ export async function createLoanAdmin(
 
   // Update stats aggregate
   await updateStatsOnLoanCreate(loanData);
+  invalidateLoansCache();
 
   return { ...loanData, id: loanRef.id, createdAt: now, updatedAt: now };
 }
@@ -114,6 +128,7 @@ export async function updateLoanAdmin(id: string, data: Partial<Loan>): Promise<
     ...data,
     updatedAt: new Date().toISOString(),
   });
+  invalidateLoansCache();
 }
 
 export async function deleteLoanAdmin(id: string): Promise<void> {
@@ -122,6 +137,7 @@ export async function deleteLoanAdmin(id: string): Promise<void> {
   for (const p of payments.docs) batch.delete(p.ref);
   batch.delete(adminDb.collection('loans').doc(id));
   await batch.commit();
+  invalidateLoansCache();
 }
 
 // ─── Payments ────────────────────────────────────────────────────────────────
@@ -141,13 +157,15 @@ export async function updatePaymentAdmin(
     ...data,
     updatedAt: new Date().toISOString(),
   });
+  invalidateLoansCache();
 }
 
-// ─── Dashboard queries (fetch all payments per loan, filter in JS — no indexes needed) ──
+// ─── Dashboard / report queries ──────────────────────────────────────────────
+// These fetch ALL payments across active loans. Expensive. Cached aggressively.
 
-export async function getAllActiveLoansWithPayments() {
+async function _getAllActiveLoansWithPayments() {
   const loansSnap = await adminDb.collection('loans').where('status', '==', 'active').get();
-  const result = [];
+  const result: { loan: Loan; payments: Payment[] }[] = [];
   for (const loanDoc of loansSnap.docs) {
     const paymentsSnap = await adminDb.collection('loans').doc(loanDoc.id).collection('payments').get();
     result.push({
@@ -158,10 +176,15 @@ export async function getAllActiveLoansWithPayments() {
   return result;
 }
 
-// Fetch every loan (any status) with its payments — for reports that include completed loans
-export async function getAllLoansWithPayments() {
+export const getAllActiveLoansWithPayments = unstable_cache(
+  _getAllActiveLoansWithPayments,
+  ['active-loans-with-payments'],
+  { tags: [LOANS_TAG], revalidate: 60 }
+);
+
+async function _getAllLoansWithPayments() {
   const loansSnap = await adminDb.collection('loans').get();
-  const result = [];
+  const result: { loan: Loan; payments: Payment[] }[] = [];
   for (const loanDoc of loansSnap.docs) {
     const paymentsSnap = await adminDb.collection('loans').doc(loanDoc.id).collection('payments').get();
     result.push({
@@ -171,6 +194,79 @@ export async function getAllLoansWithPayments() {
   }
   return result;
 }
+
+export const getAllLoansWithPayments = unstable_cache(
+  _getAllLoansWithPayments,
+  ['all-loans-with-payments'],
+  { tags: [LOANS_TAG], revalidate: 60 }
+);
+
+// ─── Today-list narrowed query (quota-friendly) ──────────────────────────────
+// Instead of reading every payment for every active loan, we run two
+// collection-group queries: one for everything due ON or BEFORE `date`, one
+// for payments actually collected ON `date`. Future payments are skipped.
+// For a book with N loans of K periods where the median loan is halfway done,
+// this reads roughly N*K/2 instead of N*K payment docs.
+//
+// Shape mirrors getAllActiveLoansWithPayments so callers can use it the same way,
+// but the per-loan `payments` array is already filtered to the relevant window.
+
+async function _getTodayListData(date: string) {
+  // Query 1: all payments due on or before the target date
+  const dueSnap = await adminDb
+    .collectionGroup('payments')
+    .where('dueDate', '<=', date)
+    .get();
+
+  // Query 2: all payments collected on the target date
+  const paidSnap = await adminDb
+    .collectionGroup('payments')
+    .where('paidDate', '==', date)
+    .get();
+
+  // Union by doc path — a payment collected today also has dueDate <= today
+  // in many cases, so de-dup is essential.
+  const byPath = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
+  for (const d of dueSnap.docs) byPath.set(d.ref.path, d);
+  for (const d of paidSnap.docs) byPath.set(d.ref.path, d);
+
+  // Group payment docs by their parent loan id.
+  const paymentsByLoanId = new Map<string, Payment[]>();
+  for (const d of byPath.values()) {
+    const loanId = d.ref.parent.parent!.id; // .../loans/{loanId}/payments/{id}
+    const arr = paymentsByLoanId.get(loanId) || [];
+    arr.push({ ...(d.data() as Payment), id: d.id, loanId });
+    paymentsByLoanId.set(loanId, arr);
+  }
+
+  // Batch-fetch the loan docs we need (one round-trip via getAll).
+  const loanIds = Array.from(paymentsByLoanId.keys());
+  if (loanIds.length === 0) return [];
+
+  const refs = loanIds.map((id) => adminDb.collection('loans').doc(id));
+  const loanDocs = await adminDb.getAll(...refs);
+
+  const result: { loan: Loan; payments: Payment[] }[] = [];
+  for (const doc of loanDocs) {
+    if (!doc.exists) continue;
+    const loan = { ...(doc.data() as Loan), id: doc.id };
+    if (loan.status !== 'active') continue; // Skip completed/defaulted
+    result.push({
+      loan,
+      payments: paymentsByLoanId.get(doc.id) || [],
+    });
+  }
+  return result;
+}
+
+/** Cached, narrowed fetch for the Collect page. Keyed by date. */
+export const getTodayListData = unstable_cache(
+  _getTodayListData,
+  ['today-list-data'],
+  { tags: [LOANS_TAG], revalidate: 60 }
+);
+
+// ─── Overdue / due-soon helpers (still used by a few routes) ─────────────────
 
 export async function getOverduePaymentsAdmin(today: string, limit = 20) {
   const loansWithPayments = await getAllActiveLoansWithPayments();
@@ -241,11 +337,10 @@ async function updateStatsOnLoanCreate(loan: Omit<Loan, 'id' | 'createdAt' | 'up
   });
 }
 
-export async function getStatsAdmin() {
-  const [loansSnap, customersSnap, statsSnap] = await Promise.all([
+async function _getStatsAdmin() {
+  const [loansSnap, customersSnap] = await Promise.all([
     adminDb.collection('loans').get(),
     adminDb.collection('customers').get(),
-    adminDb.collection('meta').doc('stats').get(),
   ]);
 
   let totalPrincipal = 0;
@@ -276,3 +371,9 @@ export async function getStatsAdmin() {
     interest_earned: interestEarned,
   };
 }
+
+export const getStatsAdmin = unstable_cache(
+  _getStatsAdmin,
+  ['stats-admin'],
+  { tags: [LOANS_TAG], revalidate: 60 }
+);

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { calculateLoan, generateWeeklySchedule, localDateStr } from '@/lib/calculations';
-import { findOrCreateCustomerAdmin } from '@/lib/firestore/customers';
-import { createLoanAdmin } from '@/lib/firestore/loans';
+import { findOrCreateCustomerAdmin } from '@/lib/db/customers';
+import { createLoanAdmin } from '@/lib/db/loans';
 
 /**
  * Notion CSV format:

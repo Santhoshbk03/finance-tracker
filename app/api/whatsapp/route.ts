@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getLoanAdmin, getPaymentsAdmin } from '@/lib/firestore/loans';
+import { getLoanAdmin, getPaymentsAdmin } from '@/lib/db/loans';
 import { sendWhatsAppReminder } from '@/lib/whatsapp';
 import { computePaymentStatus } from '@/lib/calculations';
 

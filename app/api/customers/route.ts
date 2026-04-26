@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCustomersAdmin, createCustomerAdmin } from '@/lib/firestore/customers';
-import { getLoansAdmin } from '@/lib/firestore/loans';
+import { getCustomersAdmin, createCustomerAdmin } from '@/lib/db/customers';
+import { getLoansAdmin } from '@/lib/db/loans';
 
 export async function GET() {
   try {

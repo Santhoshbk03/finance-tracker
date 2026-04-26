@@ -4,6 +4,7 @@ import {
 } from 'firebase/firestore';
 import { adminDb } from '@/lib/firebase-admin';
 import { db } from '@/lib/firebase';
+import { invalidateLoansCache } from '@/lib/firestore/loans';
 
 export interface Customer {
   id: string;
@@ -56,6 +57,7 @@ export async function deleteCustomerAdmin(id: string): Promise<void> {
   }
   batch.delete(adminDb.collection('customers').doc(id));
   await batch.commit();
+  invalidateLoansCache();
 }
 
 export async function findOrCreateCustomerAdmin(name: string, phone?: string): Promise<Customer> {

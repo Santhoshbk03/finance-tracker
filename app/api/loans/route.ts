@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getLoansAdmin, createLoanAdmin } from '@/lib/firestore/loans';
-import { getCustomerAdmin } from '@/lib/firestore/customers';
+import { getLoansAdmin, createLoanAdmin } from '@/lib/db/loans';
+import { getCustomerAdmin } from '@/lib/db/customers';
 import {
   calculateLoan, calculateDailyLoan,
   generateWeeklySchedule, generateDailySchedule,

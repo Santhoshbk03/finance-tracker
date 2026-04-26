@@ -5,7 +5,8 @@ import Link from 'next/link';
 import {
   ChevronLeft, Phone, MapPin, FileText, CheckCircle2,
   Clock, AlertTriangle, IndianRupee, Pencil, X, Check,
-  ChevronDown, ChevronUp, Calendar, Trash2, Banknote
+  ChevronDown, ChevronUp, Calendar, Trash2, Banknote,
+  ListChecks, Square, Loader2, Settings2, RefreshCw,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
@@ -67,9 +68,15 @@ function StatusPill({ status }: { status: string }) {
   return <span className={`pill ${map[status] || 'pill-pending'} capitalize`}>{status.replace('-', ' ')}</span>;
 }
 
-function PaymentRow({ payment, onUpdate }: {
+function PaymentRow({
+  payment, onUpdate,
+  selectionMode, selected, onToggleSelect,
+}: {
   payment: Payment;
   onUpdate: (id: string, paid: number, date: string, notes: string) => Promise<void>;
+  selectionMode: boolean;
+  selected: boolean;
+  onToggleSelect: (paymentId: string) => void;
 }) {
   const displayStatus = computeDisplayStatus(payment);
   const today = new Date().toISOString().split('T')[0];
@@ -79,6 +86,10 @@ function PaymentRow({ payment, onUpdate }: {
   const expectedAmt = payment.expectedAmount ?? payment.expected_amount ?? 0;
   const paidAmt = payment.paidAmount ?? payment.paid_amount ?? 0;
   const paidDateVal = payment.paidDate ?? payment.paid_date;
+  // Already-fully-paid rows can't participate in bulk-collect (matches the
+  // collect page behaviour and the bulk-collect endpoint guard).
+  const isFullyPaid = paidAmt >= expectedAmt && expectedAmt > 0;
+  const canSelect = selectionMode && !isFullyPaid && expectedAmt > 0;
 
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState('');
@@ -113,10 +124,38 @@ function PaymentRow({ payment, onUpdate }: {
     ? { background: 'rgba(245,158,11,0.05)' }
     : {};
 
+  // In selection mode, the whole row toggles the checkbox instead of the
+  // expandable editor. Keeps the interaction unambiguous for bulk flows.
+  const handleRowClick = () => {
+    if (selectionMode) {
+      if (canSelect) onToggleSelect(payment.id);
+      return;
+    }
+    setOpen(o => !o);
+  };
+
   return (
-    <div className="border-b last:border-0" style={{ borderColor: 'var(--glass-border)', ...rowStyle }}>
-      <button onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-white/[0.03] text-left">
+    <div className="border-b last:border-0"
+      style={{
+        borderColor: 'var(--glass-border)',
+        ...(selected ? { background: 'linear-gradient(135deg, rgba(139,92,246,0.10), rgba(236,72,153,0.05))' } : rowStyle),
+      }}>
+      <button onClick={handleRowClick}
+        disabled={selectionMode && !canSelect}
+        className="w-full flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-white/[0.03] text-left disabled:opacity-50 disabled:cursor-not-allowed">
+        {/* Checkbox in selection mode */}
+        {selectionMode && (
+          <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+            style={{
+              background: selected ? 'linear-gradient(135deg, var(--purple), var(--pink))' : 'var(--glass-bg-2)',
+              border: selected ? '1px solid rgba(139,92,246,0.5)' : '1px solid var(--glass-border)',
+              opacity: canSelect ? 1 : 0.4,
+            }}>
+            {selected
+              ? <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />
+              : <Square className="w-3.5 h-3.5" style={{ color: 'var(--muted-2)' }} />}
+          </div>
+        )}
         {/* Period badge */}
         <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
           style={{ background: 'var(--glass-bg-2)', border: '1px solid var(--glass-border)' }}>
@@ -152,12 +191,12 @@ function PaymentRow({ payment, onUpdate }: {
           <p className="text-xs" style={{ color: 'var(--muted)' }}>of {formatINR(expectedAmt)}</p>
         </div>
 
-        {open
+        {!selectionMode && (open
           ? <ChevronUp className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--muted)' }} />
-          : <ChevronDown className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--muted)' }} />}
+          : <ChevronDown className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--muted)' }} />)}
       </button>
 
-      {open && (
+      {open && !selectionMode && (
         <div className="px-5 pb-4" style={{ borderTop: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.15)' }}>
           <div className="pt-4 grid grid-cols-2 gap-3">
             <div>
@@ -209,6 +248,27 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
   const [markingInterest, setMarkingInterest] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+  // Bulk-select state
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkSaving, setBulkSaving] = useState(false);
+  // Edit-loan panel
+  const [showEdit, setShowEdit] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editForm, setEditForm] = useState({
+    customerName: '', customerPhone: '', notes: '',
+    principal: '', interestRate: '', loanTermPeriods: '',
+    startDate: '', planType: 'weekly' as 'weekly' | 'daily',
+    useCustomInterest: false,
+    customInterestMode: 'fixed' as 'fixed' | 'percent',
+    customInterestVal: '',
+  });
+  const [editRegenConfirm, setEditRegenConfirm] = useState(false);
+  // Inline interest-amount editor (on the Upfront Interest card)
+  const [editInterest, setEditInterest] = useState(false);
+  const [intMode, setIntMode] = useState<'fixed' | 'percent'>('fixed');
+  const [intVal, setIntVal] = useState('');
+  const [intSaving, setIntSaving] = useState(false);
 
   const flash = (type: 'success' | 'error', msg: string) => {
     setToast({ type, msg });
@@ -232,22 +292,243 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
 
   useEffect(() => { fetchLoan(true); }, [fetchLoan]);
 
+  // Pre-fill edit form whenever loan data changes
+  useEffect(() => {
+    if (!loan) return;
+    setEditForm({
+      customerName:    loan.customerName ?? loan.customer_name ?? '',
+      customerPhone:   (loan.customerPhone ?? loan.customer_phone ?? '') as string,
+      notes:           loan.notes ?? '',
+      principal:       String(loan.principal),
+      interestRate:    String(loan.interestRate ?? loan.interest_rate ?? 0),
+      loanTermPeriods: String(loan.loanTermPeriods ?? loan.loan_term_weeks ?? 0),
+      startDate:       loan.startDate ?? loan.start_date ?? '',
+      planType:        (loan.planType ?? 'weekly') as 'weekly' | 'daily',
+      useCustomInterest: false,
+      customInterestMode: 'fixed',
+      customInterestVal: String(loan.interestAmount ?? loan.interest_amount ?? ''),
+    });
+  }, [loan]);
+
+  // Apply optimistic updates to the local loan state so we don't refetch after
+  // every payment save. Mirrors the bulk-collect endpoint's status logic.
+  const applyOptimisticPaymentUpdates = useCallback((
+    ups: Array<{ paymentId: string; paidAmount: number; paidDate: string | null; notes?: string }>
+  ) => {
+    if (ups.length === 0) return;
+    const map = new Map(ups.map(u => [u.paymentId, u]));
+    const todayLocal = new Date().toISOString().split('T')[0];
+    setLoan(prev => {
+      if (!prev) return prev;
+      const newPayments = prev.payments.map(p => {
+        const u = map.get(p.id);
+        if (!u) return p;
+        const expected = p.expectedAmount ?? p.expected_amount ?? 0;
+        let status: string;
+        if (u.paidAmount >= expected && expected > 0) status = 'paid';
+        else if (u.paidAmount > 0) status = 'partial';
+        else {
+          const due = p.dueDate ?? p.due_date ?? '';
+          status = due && due < todayLocal ? 'overdue' : 'pending';
+        }
+        return {
+          ...p,
+          paidAmount: u.paidAmount,
+          paid_amount: u.paidAmount,
+          paidDate: u.paidDate,
+          paid_date: u.paidDate,
+          notes: u.notes !== undefined ? u.notes : p.notes,
+          status,
+        };
+      });
+      // Loan-level status: if all rows now paid, mark completed locally.
+      const allPaid = newPayments.every(p => {
+        const expected = p.expectedAmount ?? p.expected_amount ?? 0;
+        const paid = p.paidAmount ?? p.paid_amount ?? 0;
+        return expected > 0 && paid >= expected;
+      });
+      return {
+        ...prev,
+        payments: newPayments,
+        status: allPaid ? 'completed' : prev.status,
+      };
+    });
+  }, []);
+
   const handlePaymentUpdate = async (paymentId: string, paid_amount: number, paid_date: string, paymentNotes: string) => {
     try {
-      const res = await fetch(`/api/payments/${paymentId}`, {
-        method: 'PUT',
+      // Use the bulk endpoint with a single-item payload — saves the post-write
+      // refetch (which on this page would re-hit Firestore for every payment).
+      const res = await fetch('/api/payments/bulk-collect', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ paid_amount, paid_date, notes: paymentNotes, loan_id: id }),
+        body: JSON.stringify({
+          payments: [{
+            loanId: id,
+            paymentId,
+            paidAmount: paid_amount,
+            paidDate: paid_amount > 0 ? paid_date : null,
+            notes: paymentNotes,
+          }],
+        }),
       });
       if (!res.ok) {
         const d = await res.json().catch(() => ({}));
         throw new Error(d.error || `HTTP ${res.status}`);
       }
+      applyOptimisticPaymentUpdates([{
+        paymentId,
+        paidAmount: paid_amount,
+        paidDate: paid_amount > 0 ? paid_date : null,
+        notes: paymentNotes,
+      }]);
       flash('success', paid_amount > 0 ? 'Payment recorded' : 'Payment cleared');
-      await fetchLoan();
     } catch (e) {
       flash('error', e instanceof Error ? e.message : 'Failed to save');
       throw e;
+    }
+  };
+
+  const toggleSelect = useCallback((paymentId: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(paymentId)) next.delete(paymentId);
+      else next.add(paymentId);
+      return next;
+    });
+  }, []);
+
+  const cancelSelection = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  const selectAllDue = useCallback(() => {
+    if (!loan) return;
+    setSelectedIds(prev => {
+      const dueIds = loan.payments
+        .filter(p => {
+          const expected = p.expectedAmount ?? p.expected_amount ?? 0;
+          const paid = p.paidAmount ?? p.paid_amount ?? 0;
+          return expected > 0 && paid < expected;
+        })
+        .map(p => p.id);
+      const allSelected = dueIds.length > 0 && dueIds.every(id => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) dueIds.forEach(id => next.delete(id));
+      else dueIds.forEach(id => next.add(id));
+      return next;
+    });
+  }, [loan]);
+
+  const bulkCollectPayments = useCallback(async () => {
+    if (!loan || selectedIds.size === 0) return;
+    const todayLocal = new Date().toISOString().split('T')[0];
+    const items: Array<{ loanId: string; paymentId: string; paidAmount: number; paidDate: string | null; notes?: string }> = [];
+    const updates: Array<{ paymentId: string; paidAmount: number; paidDate: string | null; notes?: string }> = [];
+    for (const p of loan.payments) {
+      if (!selectedIds.has(p.id)) continue;
+      const expected = p.expectedAmount ?? p.expected_amount ?? 0;
+      const paid = p.paidAmount ?? p.paid_amount ?? 0;
+      if (expected <= 0 || paid >= expected) continue;
+      items.push({
+        loanId: id,
+        paymentId: p.id,
+        paidAmount: expected,
+        paidDate: todayLocal,
+        notes: p.notes || '',
+      });
+      updates.push({ paymentId: p.id, paidAmount: expected, paidDate: todayLocal });
+    }
+    if (items.length === 0) {
+      flash('error', 'Nothing to collect in selection');
+      return;
+    }
+    setBulkSaving(true);
+    try {
+      const res = await fetch('/api/payments/bulk-collect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ payments: items }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || `HTTP ${res.status}`);
+      applyOptimisticPaymentUpdates(updates);
+      const total = items.reduce((s, i) => s + i.paidAmount, 0);
+      flash('success', `Collected ${formatINR(total)} from ${items.length} payment${items.length > 1 ? 's' : ''}`);
+      setSelectedIds(new Set());
+      setSelectionMode(false);
+    } catch (e) {
+      flash('error', e instanceof Error ? e.message : 'Bulk collect failed');
+    } finally {
+      setBulkSaving(false);
+    }
+  }, [loan, selectedIds, id, applyOptimisticPaymentUpdates]);
+
+  const selectedTotal = (() => {
+    if (!loan || selectedIds.size === 0) return 0;
+    let total = 0;
+    for (const p of loan.payments) {
+      if (!selectedIds.has(p.id)) continue;
+      total += p.expectedAmount ?? p.expected_amount ?? 0;
+    }
+    return total;
+  })();
+
+  // ── Loan edit ────────────────────────────────────────────────────────────────
+  const scheduleWillChange = loan
+    ? (editForm.principal !== String(loan.principal) ||
+       editForm.loanTermPeriods !== String(loan.loanTermPeriods ?? loan.loan_term_weeks ?? 0) ||
+       editForm.startDate !== (loan.startDate ?? loan.start_date) ||
+       editForm.planType !== (loan.planType ?? 'weekly'))
+    : false;
+
+  const handleSaveLoan = async () => {
+    if (scheduleWillChange && !editRegenConfirm) {
+      setEditRegenConfirm(true);
+      return;
+    }
+    setEditSaving(true);
+    try {
+      const body: Record<string, unknown> = {
+        customerName:  editForm.customerName,
+        customerPhone: editForm.customerPhone,
+        notes:         editForm.notes,
+      };
+      if (scheduleWillChange) {
+        body.principal       = parseFloat(editForm.principal);
+        body.interestRate    = parseFloat(editForm.interestRate);
+        body.loanTermPeriods = parseInt(editForm.loanTermPeriods);
+        body.startDate       = editForm.startDate;
+        body.planType        = editForm.planType;
+        body.regenerate      = true;
+      }
+      // Custom interest amount override (works with or without regeneration)
+      if (editForm.useCustomInterest) {
+        const principal = parseFloat(editForm.principal) || (loan?.principal ?? 0);
+        const customAmt = editForm.customInterestMode === 'percent'
+          ? Math.round(principal * (parseFloat(editForm.customInterestVal) || 0) / 100 * 100) / 100
+          : parseFloat(editForm.customInterestVal) || 0;
+        body.customInterestAmount = customAmt;
+      }
+      const res = await fetch(`/api/loans/${id}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || `HTTP ${res.status}`);
+      }
+      const updated = await res.json();
+      setLoan(updated);
+      setNotes(updated.notes || '');
+      setShowEdit(false);
+      setEditRegenConfirm(false);
+      flash('success', scheduleWillChange ? 'Loan updated + schedule regenerated' : 'Loan updated');
+    } catch (e) {
+      flash('error', e instanceof Error ? e.message : 'Failed to save');
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -297,6 +578,34 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
     }
   };
 
+  const handleSaveInterestAmount = async () => {
+    if (!loan) return;
+    setIntSaving(true);
+    try {
+      const amt = intMode === 'percent'
+        ? Math.round(loan.principal * (parseFloat(intVal) || 0) / 100 * 100) / 100
+        : parseFloat(intVal) || 0;
+      const res = await fetch(`/api/loans/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ interest_amount: amt }),
+      });
+      if (!res.ok) throw new Error('Failed');
+      const updated = await res.json();
+      setLoan(prev => prev ? {
+        ...prev,
+        interestAmount: updated.interestAmount ?? updated.interest_amount ?? amt,
+        interest_amount: updated.interest_amount ?? amt,
+      } : prev);
+      setEditInterest(false);
+      flash('success', 'Interest amount updated');
+    } catch {
+      flash('error', 'Failed to update interest amount');
+    } finally {
+      setIntSaving(false);
+    }
+  };
+
   if (loading) return (
     <div style={{ background: 'var(--bg)', minHeight: '100vh' }}>
       <Header title="Loan Details" />
@@ -336,6 +645,28 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
   const progress = totalPeriods > 0 ? Math.round((paidCount / totalPeriods) * 100) : 0;
   const outstanding = Math.max(0, loan.principal - totalCollected);
 
+  // Edit modal — auto-calculated interest based on current form values
+  const editCalcInterest = (() => {
+    const p = parseFloat(editForm.principal) || loan.principal;
+    const r = parseFloat(editForm.interestRate) || (loan.interestRate ?? loan.interest_rate ?? 0);
+    const t = parseInt(editForm.loanTermPeriods) || (loan.loanTermPeriods ?? loan.loan_term_weeks ?? 0);
+    const m = Math.ceil(t / (editForm.planType === 'daily' ? 30 : 4));
+    return Math.round(p * r * m / 100 * 100) / 100;
+  })();
+
+  const editCustomInterestAmt = (() => {
+    const p = parseFloat(editForm.principal) || loan.principal;
+    const v = parseFloat(editForm.customInterestVal) || 0;
+    return editForm.customInterestMode === 'percent'
+      ? Math.round(p * v / 100 * 100) / 100
+      : v;
+  })();
+
+  // Inline interest card editor
+  const intComputedAmt = intMode === 'percent'
+    ? Math.round(loan.principal * (parseFloat(intVal) || 0) / 100 * 100) / 100
+    : parseFloat(intVal) || 0;
+
   return (
     <div style={{ background: 'var(--bg)', minHeight: '100vh' }}>
       <Header title="Loan Details" />
@@ -346,11 +677,18 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
             style={{ color: 'var(--muted)' }}>
             <ChevronLeft className="w-4 h-4" /> Loans
           </Link>
-          <button onClick={() => setShowDelete(true)}
-            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-colors"
-            style={{ color: '#fb7185', background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.15)' }}>
-            <Trash2 className="w-3.5 h-3.5" /> Delete
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => { setShowEdit(true); setEditRegenConfirm(false); }}
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-colors"
+              style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)' }}>
+              <Settings2 className="w-3.5 h-3.5" /> Edit
+            </button>
+            <button onClick={() => setShowDelete(true)}
+              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-colors"
+              style={{ color: '#fb7185', background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.15)' }}>
+              <Trash2 className="w-3.5 h-3.5" /> Delete
+            </button>
+          </div>
         </div>
 
         {/* Customer Card */}
@@ -437,7 +775,9 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
               ? <span className="pill pill-paid"><CheckCircle2 className="w-3 h-3" /> Collected</span>
               : <span className="pill pill-partial">Pending</span>}
           </div>
-          <div className="flex items-center justify-between">
+
+          {/* Amount row */}
+          <div className="flex items-center justify-between mb-3">
             <div>
               <p className="text-2xl font-black" style={{ color: 'var(--text)' }}>{formatINR(interestAmt)}</p>
               <p className="text-xs mt-0.5" style={{ color: 'var(--muted)' }}>
@@ -446,14 +786,94 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
                   : `Due on ${startDate ? new Date(startDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}`}
               </p>
             </div>
-            <button onClick={handleToggleInterest} disabled={markingInterest}
-              className="px-4 py-2 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 text-white"
-              style={interestCollected
-                ? { background: 'var(--glass-bg-2)', color: 'var(--muted)', border: '1px solid var(--glass-border)' }
-                : { background: 'var(--green)', boxShadow: '0 4px 16px var(--glow-green)' }}>
-              {markingInterest ? '…' : interestCollected ? 'Undo' : 'Mark Collected'}
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Edit amount button */}
+              {!editInterest && (
+                <button
+                  onClick={() => { setIntVal(String(interestAmt)); setIntMode('fixed'); setEditInterest(true); }}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
+                  style={{ background: 'var(--glass-bg-2)', border: '1px solid var(--glass-border)', color: 'var(--muted)' }}
+                  title="Edit interest amount">
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button onClick={handleToggleInterest} disabled={markingInterest}
+                className="px-4 py-2 rounded-xl text-sm font-semibold transition-all disabled:opacity-50 text-white"
+                style={interestCollected
+                  ? { background: 'var(--glass-bg-2)', color: 'var(--muted)', border: '1px solid var(--glass-border)' }
+                  : { background: 'var(--green)', boxShadow: '0 4px 16px var(--glow-green)' }}>
+                {markingInterest ? '…' : interestCollected ? 'Undo' : 'Mark Collected'}
+              </button>
+            </div>
           </div>
+
+          {/* Inline interest amount editor */}
+          {editInterest && (
+            <div className="rounded-xl p-4 space-y-3"
+              style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.2)' }}>
+              <p className="text-xs font-semibold" style={{ color: '#fbbf24' }}>Edit Interest Amount</p>
+
+              {/* Mode toggle */}
+              <div className="grid grid-cols-2 gap-1 p-1 rounded-lg" style={{ background: 'var(--glass-bg-2)' }}>
+                {(['fixed', 'percent'] as const).map(m => (
+                  <button key={m} type="button"
+                    onClick={() => {
+                      setIntMode(m);
+                      // Convert current value when switching modes
+                      if (m === 'percent' && loan.principal > 0) {
+                        const amt = parseFloat(intVal) || 0;
+                        setIntVal(String(Math.round(amt / loan.principal * 100 * 100) / 100));
+                      } else {
+                        setIntVal(String(intComputedAmt || interestAmt));
+                      }
+                    }}
+                    className="py-1.5 rounded-md text-xs font-bold transition-all"
+                    style={{
+                      background: intMode === m ? 'linear-gradient(135deg, var(--amber), #d97706)' : 'transparent',
+                      color: intMode === m ? '#fff' : 'var(--muted)',
+                    }}>
+                    {m === 'fixed' ? '₹ Fixed Amount' : '% of Principal'}
+                  </button>
+                ))}
+              </div>
+
+              {/* Input */}
+              <div className="relative">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm font-medium"
+                  style={{ color: 'var(--muted-2)' }}>
+                  {intMode === 'fixed' ? '₹' : '%'}
+                </span>
+                <input
+                  type="number" min="0" step={intMode === 'percent' ? '0.1' : '1'}
+                  value={intVal}
+                  onChange={e => setIntVal(e.target.value)}
+                  className="input pl-8"
+                  placeholder={intMode === 'fixed' ? '0' : '0.0'} />
+              </div>
+
+              {/* Preview */}
+              {intMode === 'percent' && (
+                <p className="text-xs" style={{ color: 'var(--muted)' }}>
+                  = <strong style={{ color: 'var(--text)' }}>{formatINR(intComputedAmt)}</strong>
+                  {' '}({parseFloat(intVal) || 0}% of {formatINR(loan.principal)})
+                </p>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={() => setEditInterest(false)}
+                  className="btn-ghost flex-1 justify-center py-2 text-xs">
+                  <X className="w-3.5 h-3.5" /> Cancel
+                </button>
+                <button type="button" onClick={handleSaveInterestAmount} disabled={intSaving}
+                  className="flex-1 py-2 rounded-xl text-xs font-bold text-white flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)', boxShadow: '0 4px 12px rgba(245,158,11,0.3)' }}>
+                  {intSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" strokeWidth={3} />}
+                  {intSaving ? 'Saving…' : `Save ${formatINR(intComputedAmt)}`}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Notes */}
@@ -495,23 +915,278 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
               <IndianRupee className="w-4 h-4" style={{ color: 'var(--purple)' }} />
               {isDaily ? 'Daily' : 'Weekly'} Collections ({totalPeriods} {isDaily ? 'days' : 'weeks'})
             </h3>
-            <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--muted)' }}>
+            <div className="flex items-center gap-2">
+              {selectionMode ? (
+                <>
+                  <button onClick={selectAllDue}
+                    className="text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors flex items-center gap-1"
+                    style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                    <Square className="w-3 h-3" /> All due
+                  </button>
+                  <button onClick={cancelSelection}
+                    className="text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors flex items-center gap-1"
+                    style={{ color: 'var(--muted)', background: 'var(--glass-bg-2)', border: '1px solid var(--glass-border)' }}>
+                    <X className="w-3 h-3" /> Cancel
+                  </button>
+                </>
+              ) : (
+                <button onClick={() => setSelectionMode(true)}
+                  disabled={loan.payments.length === 0}
+                  className="text-xs font-semibold px-2.5 py-1.5 rounded-lg transition-colors flex items-center gap-1 disabled:opacity-50"
+                  style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                  <ListChecks className="w-3 h-3" /> Select
+                </button>
+              )}
+            </div>
+          </div>
+          {!selectionMode && (
+            <div className="px-5 py-2 flex items-center gap-3 text-xs"
+              style={{ color: 'var(--muted)', borderBottom: '1px solid var(--glass-border)', background: 'rgba(0,0,0,0.12)' }}>
               <span className="flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" style={{ color: 'var(--green)' }} /> Paid</span>
               <span className="flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" style={{ color: 'var(--red)' }} /> Overdue</span>
               <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" style={{ color: 'var(--muted-2)' }} /> Pending</span>
             </div>
-          </div>
+          )}
           <div>
             {loan.payments.length === 0 ? (
               <p className="text-sm text-center py-8" style={{ color: 'var(--muted)' }}>No payment schedule found</p>
             ) : (
               loan.payments.map(p => (
-                <PaymentRow key={p.id} payment={{ ...p, planType: loan.planType } as any} onUpdate={handlePaymentUpdate} />
+                <PaymentRow key={p.id} payment={{ ...p, planType: loan.planType } as any} onUpdate={handlePaymentUpdate}
+                  selectionMode={selectionMode}
+                  selected={selectedIds.has(p.id)}
+                  onToggleSelect={toggleSelect} />
               ))
             )}
           </div>
         </div>
       </div>
+
+      {/* Floating bulk action bar */}
+      {selectionMode && (
+        <div className="fixed bottom-20 left-0 right-0 z-50 px-4 pointer-events-none">
+          <div className="max-w-md mx-auto pointer-events-auto rounded-2xl px-4 py-3 flex items-center gap-3 shadow-2xl"
+            style={{
+              background: 'linear-gradient(135deg, rgba(139,92,246,0.95), rgba(124,58,237,0.95))',
+              border: '1px solid rgba(255,255,255,0.18)',
+              backdropFilter: 'blur(16px)',
+              boxShadow: '0 16px 48px rgba(139,92,246,0.45)',
+            }}>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold text-white/80 leading-tight">
+                {selectedIds.size === 0 ? 'Tap rows to select' : `${selectedIds.size} selected`}
+              </p>
+              {selectedIds.size > 0 && (
+                <p className="text-base font-black text-white truncate">{formatINR(selectedTotal)}</p>
+              )}
+            </div>
+            <button onClick={cancelSelection} disabled={bulkSaving}
+              className="px-3 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50"
+              style={{ background: 'rgba(255,255,255,0.15)', color: '#fff', border: '1px solid rgba(255,255,255,0.2)' }}>
+              Cancel
+            </button>
+            <button onClick={bulkCollectPayments} disabled={bulkSaving || selectedIds.size === 0}
+              className="px-4 py-2 rounded-lg text-xs font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-1.5"
+              style={{
+                background: '#fff',
+                color: 'var(--purple)',
+                boxShadow: '0 4px 14px rgba(0,0,0,0.2)',
+              }}>
+              {bulkSaving
+                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                : <Check className="w-3.5 h-3.5" strokeWidth={3} />}
+              Collect All
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit Loan Modal ── */}
+      {showEdit && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)' }}>
+          <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl shadow-2xl overflow-y-auto max-h-[90vh]"
+            style={{ background: 'var(--surface)', border: '1px solid var(--glass-border)' }}>
+            {/* Header */}
+            <div className="sticky top-0 px-5 pt-5 pb-4 flex items-center justify-between"
+              style={{ background: 'var(--surface)', borderBottom: '1px solid var(--glass-border)' }}>
+              <h3 className="font-bold text-base flex items-center gap-2" style={{ color: 'var(--text)' }}>
+                <Settings2 className="w-4 h-4" style={{ color: 'var(--purple)' }} /> Edit Loan
+              </h3>
+              <button onClick={() => { setShowEdit(false); setEditRegenConfirm(false); }}
+                className="w-8 h-8 rounded-lg flex items-center justify-center"
+                style={{ background: 'var(--glass-bg-2)', color: 'var(--muted)' }}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {/* Customer info */}
+              <div>
+                <p className="section-label mb-2">Customer</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="section-label block mb-1">Name</label>
+                    <input value={editForm.customerName} onChange={e => setEditForm(f => ({ ...f, customerName: e.target.value }))}
+                      className="input py-2 text-sm" placeholder="Name" />
+                  </div>
+                  <div>
+                    <label className="section-label block mb-1">Phone</label>
+                    <input value={editForm.customerPhone} onChange={e => setEditForm(f => ({ ...f, customerPhone: e.target.value }))}
+                      className="input py-2 text-sm" placeholder="+91…" type="tel" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Loan terms */}
+              <div style={{ borderTop: '1px solid var(--glass-border)', paddingTop: '1rem' }}>
+                <p className="section-label mb-2 flex items-center gap-1.5">
+                  Loan Terms
+                  {scheduleWillChange && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md"
+                      style={{ background: 'rgba(245,158,11,0.15)', color: '#fbbf24' }}>
+                      schedule will regenerate
+                    </span>
+                  )}
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="section-label block mb-1">Plan</label>
+                    <select value={editForm.planType} onChange={e => setEditForm(f => ({ ...f, planType: e.target.value as any }))}
+                      className="input py-2 text-sm">
+                      <option value="weekly">Weekly</option>
+                      <option value="daily">Daily</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="section-label block mb-1">Principal (₹)</label>
+                    <input value={editForm.principal} onChange={e => setEditForm(f => ({ ...f, principal: e.target.value }))}
+                      className="input py-2 text-sm" type="number" min="0" />
+                  </div>
+                  <div>
+                    <label className="section-label block mb-1">Interest Rate (%)</label>
+                    <input value={editForm.interestRate} onChange={e => setEditForm(f => ({ ...f, interestRate: e.target.value }))}
+                      className="input py-2 text-sm" type="number" min="0" step="0.5" />
+                  </div>
+                  <div>
+                    <label className="section-label block mb-1">{editForm.planType === 'daily' ? 'Days' : 'Weeks'}</label>
+                    <input value={editForm.loanTermPeriods} onChange={e => setEditForm(f => ({ ...f, loanTermPeriods: e.target.value }))}
+                      className="input py-2 text-sm" type="number" min="1" />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="section-label block mb-1">Start Date</label>
+                    <input value={editForm.startDate} onChange={e => setEditForm(f => ({ ...f, startDate: e.target.value }))}
+                      className="input py-2 text-sm" type="date" />
+                  </div>
+
+                  {/* Interest amount — always visible direct edit */}
+                  <div className="col-span-2">
+                    <label className="section-label block mb-1">
+                      Interest Amount (₹)
+                      <span className="ml-1.5 font-normal" style={{ color: 'var(--muted-2)' }}>
+                        — auto: {formatINR(editCalcInterest)}
+                      </span>
+                    </label>
+                    {/* Mode toggle */}
+                    <div className="grid grid-cols-2 gap-1 p-1 mb-2 rounded-lg" style={{ background: 'var(--glass-bg-2)' }}>
+                      {(['fixed', 'percent'] as const).map(m => (
+                        <button key={m} type="button"
+                          onClick={() => setEditForm(f => ({ ...f, customInterestMode: m, useCustomInterest: true, customInterestVal: m === 'percent' ? '' : f.customInterestVal }))}
+                          className="py-1 rounded-md text-[11px] font-bold transition-all"
+                          style={{
+                            background: editForm.customInterestMode === m
+                              ? 'linear-gradient(135deg, #f59e0b, #d97706)' : 'transparent',
+                            color: editForm.customInterestMode === m ? '#fff' : 'var(--muted)',
+                          }}>
+                          {m === 'fixed' ? '₹ Fixed Amount' : '% of Principal'}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-medium"
+                        style={{ color: 'var(--muted-2)' }}>
+                        {editForm.customInterestMode === 'fixed' ? '₹' : '%'}
+                      </span>
+                      <input
+                        type="number" min="0" step={editForm.customInterestMode === 'percent' ? '0.1' : '1'}
+                        value={editForm.customInterestVal}
+                        onChange={e => setEditForm(f => ({ ...f, customInterestVal: e.target.value, useCustomInterest: e.target.value !== '' }))}
+                        className="input pl-7 py-2 text-sm"
+                        placeholder={editForm.customInterestMode === 'fixed'
+                          ? `${editCalcInterest} (auto)`
+                          : 'e.g. 5'} />
+                    </div>
+                    {editForm.useCustomInterest && editForm.customInterestVal !== '' && (
+                      <p className="text-[11px] mt-1" style={{ color: 'var(--muted)' }}>
+                        → Interest set to{' '}
+                        <strong style={{ color: '#fbbf24' }}>{formatINR(editCustomInterestAmt)}</strong>
+                        {editForm.customInterestMode === 'percent' &&
+                          ` (${editForm.customInterestVal}% of ${formatINR(parseFloat(editForm.principal) || loan.principal)})`}
+                        {' '}<button type="button" className="underline text-[11px]"
+                          style={{ color: 'var(--muted-2)' }}
+                          onClick={() => setEditForm(f => ({ ...f, useCustomInterest: false, customInterestVal: '' }))}>
+                          clear
+                        </button>
+                      </p>
+                    )}
+                    {!editForm.useCustomInterest && (
+                      <p className="text-[11px] mt-1" style={{ color: 'var(--muted-2)' }}>
+                        Leave blank to use auto-calculated amount ({formatINR(editCalcInterest)})
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div>
+                <label className="section-label block mb-1">Notes</label>
+                <textarea value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
+                  rows={2} className="input resize-none text-sm" placeholder="Optional notes…" />
+              </div>
+
+              {/* Regenerate confirmation warning */}
+              {editRegenConfirm && scheduleWillChange && (
+                <div className="rounded-xl p-4"
+                  style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
+                  <div className="flex items-start gap-2">
+                    <RefreshCw className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: '#fbbf24' }} />
+                    <div>
+                      <p className="text-sm font-semibold mb-1" style={{ color: 'var(--text)' }}>Regenerate payment schedule?</p>
+                      <p className="text-xs" style={{ color: 'var(--muted)' }}>
+                        All <strong>pending</strong> payment rows will be deleted and recreated from the new terms.
+                        Already-collected payments are preserved.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex gap-3 pt-1">
+                <button onClick={() => { setShowEdit(false); setEditRegenConfirm(false); }}
+                  className="btn-ghost flex-1 justify-center py-3 text-sm">
+                  Cancel
+                </button>
+                <button onClick={handleSaveLoan} disabled={editSaving}
+                  className="flex-1 py-3 rounded-xl font-semibold text-sm text-white transition-all disabled:opacity-60 flex items-center justify-center gap-2"
+                  style={{
+                    background: editRegenConfirm && scheduleWillChange
+                      ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                      : 'linear-gradient(135deg, var(--purple), var(--pink))',
+                    boxShadow: '0 4px 16px rgba(139,92,246,0.3)',
+                  }}>
+                  {editSaving
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving…</>
+                    : editRegenConfirm && scheduleWillChange
+                    ? <><RefreshCw className="w-3.5 h-3.5" /> Confirm & Regenerate</>
+                    : <><Check className="w-3.5 h-3.5" /> Save Changes</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete Confirm */}
       {showDelete && (

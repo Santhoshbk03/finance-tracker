@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCustomerAdmin, updateCustomerAdmin, deleteCustomerAdmin } from '@/lib/firestore/customers';
+import { getCustomerAdmin, updateCustomerAdmin, deleteCustomerAdmin } from '@/lib/db/customers';
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {

@@ -103,11 +103,15 @@ export default function DashboardPage() {
 
   const load = () => {
     setLoading(true);
-    fetch('/api/dashboard').then(r => r.json()).then(setData).catch(console.error).finally(() => setLoading(false));
+    fetch('/api/dashboard')
+      .then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e)))
+      .then(setData)
+      .catch(console.error)
+      .finally(() => setLoading(false));
   };
   useEffect(() => { load(); }, []);
 
-  const chartData = data?.monthlyData.map(m => ({
+  const chartData = data?.monthlyData?.map(m => ({
     month: new Date(m.month + '-01').toLocaleDateString('en-IN', { month: 'short' }),
     amount: Math.round(m.collected),
   })) || [];
@@ -116,9 +120,9 @@ export default function DashboardPage() {
     ? Math.min(100, Math.round((data.thisWeek.collected / (data.thisWeek.expected || 1)) * 100))
     : 0;
 
-  const totalPrincipal = data?.stats.total_principal || 0;
-  const interestPending = data?.stats.interest_pending ?? data?.stats.total_expected_interest ?? 0;
-  const interestEarned = data?.stats.interest_earned || 0;
+  const totalPrincipal = data?.stats?.total_principal || 0;
+  const interestPending = data?.stats?.interest_pending ?? data?.stats?.total_expected_interest ?? 0;
+  const interestEarned = data?.stats?.interest_earned || 0;
   const overdueCount = data?.overduePayments?.length || 0;
   const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
 
@@ -164,7 +168,7 @@ export default function DashboardPage() {
             </div>
             <p className="text-[42px] font-black tracking-tight leading-none text-white mb-0.5">{fmt(totalPrincipal)}</p>
             <p className="text-white/45 text-xs mb-5">
-              {fmtFull(totalPrincipal)} · {data?.stats.active_loans || 0} active loans
+              {fmtFull(totalPrincipal)} · {data?.stats?.active_loans || 0} active loans
             </p>
 
             <div className="grid grid-cols-3 gap-2.5">
@@ -191,7 +195,7 @@ export default function DashboardPage() {
               <Users className="w-5 h-5" style={{ color: 'var(--purple)' }} />
             </div>
             <div>
-              <p className="text-2xl font-black" style={{ color: 'var(--text)' }}>{data?.stats.total_customers || 0}</p>
+              <p className="text-2xl font-black" style={{ color: 'var(--text)' }}>{data?.stats?.total_customers || 0}</p>
               <p className="text-xs" style={{ color: 'var(--muted)' }}>Borrowers</p>
             </div>
           </div>
@@ -201,7 +205,7 @@ export default function DashboardPage() {
               <CheckCircle2 className="w-5 h-5" style={{ color: 'var(--green)' }} />
             </div>
             <div>
-              <p className="text-2xl font-black" style={{ color: 'var(--text)' }}>{data?.stats.completed_loans || 0}</p>
+              <p className="text-2xl font-black" style={{ color: 'var(--text)' }}>{data?.stats?.completed_loans || 0}</p>
               <p className="text-xs" style={{ color: 'var(--muted)' }}>Completed</p>
             </div>
           </div>

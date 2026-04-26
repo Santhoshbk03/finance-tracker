@@ -3,8 +3,7 @@
  * Used by both on-demand API endpoints and cron endpoints.
  */
 import React from 'react';
-import { getAllLoansWithPayments } from '@/lib/firestore/loans';
-import { adminDb } from '@/lib/firebase-admin';
+import { getAllLoansWithPayments, getStatsAdmin } from '@/lib/db/loans';
 import {
   TodaysCollectionSheet, DailyReport, WeeklyReport,
   buildTodayRows, buildDailyReportData, buildWeeklyReportData,
@@ -46,11 +45,11 @@ export async function renderWeeklyReportPdf(
     weekEndStr = localDateStr(end);
   }
 
-  const [lps, customersSnap] = await Promise.all([
+  const [lps, stats] = await Promise.all([
     getAllLoansWithPayments(),
-    adminDb.collection('customers').get(),
+    getStatsAdmin(),
   ]);
-  const data = buildWeeklyReportData(lps, weekStartStr, weekEndStr, customersSnap.size);
+  const data = buildWeeklyReportData(lps, weekStartStr, weekEndStr, stats.total_customers);
   const element = React.createElement(WeeklyReport, { data });
   const buffer = await renderPdfToBuffer(element);
   return { buffer, weekStartStr, weekEndStr, data };

@@ -76,6 +76,7 @@ function NewLoanForm() {
     notes: '',
     custom_interest: '',
     use_custom_interest: false,
+    custom_interest_mode: 'fixed' as 'fixed' | 'percent',
     interest_collected: true, // default: customer paid interest upfront
   });
 
@@ -122,9 +123,11 @@ function NewLoanForm() {
     };
   }, [planType, periods, principal, rate]);
 
-  const interestAmount = form.use_custom_interest
-    ? (parseFloat(form.custom_interest) || 0)
-    : calcInterest;
+  const customInterestAmt = form.custom_interest_mode === 'percent'
+    ? Math.round(principal * (parseFloat(form.custom_interest) || 0) / 100 * 100) / 100
+    : parseFloat(form.custom_interest) || 0;
+
+  const interestAmount = form.use_custom_interest ? customInterestAmt : calcInterest;
 
   // Disbursed (what the customer actually receives today)
   const disbursedAmount = form.interest_collected ? Math.max(0, principal - interestAmount) : principal;
@@ -186,7 +189,7 @@ function NewLoanForm() {
           ...(planType === 'daily' && skipDays.length > 0 ? { skipDays } : {}),
         },
       };
-      if (form.use_custom_interest) payload.interest_amount = form.custom_interest;
+      if (form.use_custom_interest) payload.interest_amount = customInterestAmt;
 
       const res = await fetch('/api/loans', {
         method: 'POST',
@@ -315,6 +318,11 @@ function NewLoanForm() {
             <input value={form.start_date} onChange={set('start_date')} type="date" required className="input" />
             <p className="text-[11px] mt-1.5" style={{ color: 'var(--muted-2)' }}>
               {new Date(form.start_date + 'T00:00:00').toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+              {form.start_date < todayStr() && (
+                <span className="ml-1.5 font-semibold" style={{ color: 'var(--amber)' }}>
+                  • past date (schedule starts from here)
+                </span>
+              )}
             </p>
           </div>
         </div>
@@ -483,13 +491,43 @@ function NewLoanForm() {
             <div className="flex-1">
               <p className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Override calculated interest</p>
               <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
-                Default: <strong style={{ color: 'var(--text)' }}>{formatINR(calcInterest)}</strong> ({rate}% × {months}mo)
+                Auto: <strong style={{ color: 'var(--text)' }}>{formatINR(calcInterest)}</strong> ({rate}% × {months}mo)
               </p>
               {form.use_custom_interest && (
-                <div className="relative mt-2">
-                  <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm" style={{ color: 'var(--muted-2)' }}>₹</span>
-                  <input value={form.custom_interest} onChange={set('custom_interest')}
-                    type="number" min="0" className="input pl-8 text-sm" placeholder="Interest amount" />
+                <div className="mt-2.5 space-y-2">
+                  {/* Mode toggle */}
+                  <div className="grid grid-cols-2 gap-1 p-1 rounded-lg" style={{ background: 'var(--glass-bg-2)' }}>
+                    {(['fixed', 'percent'] as const).map(m => (
+                      <button key={m} type="button"
+                        onClick={() => setForm(f => ({ ...f, custom_interest_mode: m, custom_interest: m === 'percent' ? '' : String(calcInterest) }))}
+                        className="py-1.5 rounded-md text-[11px] font-bold transition-all"
+                        style={{
+                          background: form.custom_interest_mode === m
+                            ? 'linear-gradient(135deg, var(--purple), var(--pink))'
+                            : 'transparent',
+                          color: form.custom_interest_mode === m ? '#fff' : 'var(--muted)',
+                        }}>
+                        {m === 'fixed' ? '₹ Fixed Amount' : '% of Principal'}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Input */}
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-sm" style={{ color: 'var(--muted-2)' }}>
+                      {form.custom_interest_mode === 'fixed' ? '₹' : '%'}
+                    </span>
+                    <input value={form.custom_interest} onChange={set('custom_interest')}
+                      type="number" min="0" step={form.custom_interest_mode === 'percent' ? '0.1' : '1'}
+                      className="input pl-8 text-sm"
+                      placeholder={form.custom_interest_mode === 'fixed' ? 'Amount in ₹' : 'Percentage'} />
+                  </div>
+                  {/* % mode preview */}
+                  {form.custom_interest_mode === 'percent' && principal > 0 && (
+                    <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                      = <strong style={{ color: 'var(--text)' }}>{formatINR(customInterestAmt)}</strong>
+                      {' '}({form.custom_interest || 0}% of {formatINR(principal)})
+                    </p>
+                  )}
                 </div>
               )}
             </div>
