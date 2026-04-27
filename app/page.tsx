@@ -4,7 +4,8 @@ import Link from 'next/link';
 import {
   TrendingUp, Users, AlertTriangle, CheckCircle2,
   Clock, ChevronRight, RefreshCw, Banknote, Zap,
-  ArrowUpRight, Wallet
+  ArrowUpRight, Wallet, MessageCircle, Target,
+  IndianRupee, Activity, TrendingDown, Pencil, Check, X,
 } from 'lucide-react';
 import {
   AreaChart, Area, XAxis, YAxis,
@@ -25,6 +26,7 @@ interface DashboardData {
     active_loans: number; completed_loans: number; total_customers: number;
     total_principal: number; total_expected_interest: number; total_collected: number;
     interest_pending: number; interest_earned: number;
+    today_due: number; today_collected: number; overdue_count: number;
   };
   overduePayments: Payment[];
   dueSoon: Payment[];
@@ -75,31 +77,94 @@ function Avatar({ name, size = 36 }: { name: string; size?: number }) {
   );
 }
 
-function PaymentRow({ p, href, amountColor, amount }: {
-  p: Payment; href: string; amountColor: string; amount: number;
+function PaymentRow({ p, href, amountColor, amount, showWa }: {
+  p: Payment; href: string; amountColor: string; amount: number; showWa?: boolean;
 }) {
+  const waPhone = showWa && p.customer_phone
+    ? p.customer_phone.replace(/\D/g, '').replace(/^0/, '').replace(/^(?!91)/, '91')
+    : null;
+  const firstName = p.customer_name?.split(' ')[0] || p.customer_name || '';
+  const waMsg = waPhone
+    ? encodeURIComponent(`Hi ${firstName}, your payment of ₹${amount.toLocaleString('en-IN')} is overdue. Please clear at the earliest. 🙏`)
+    : null;
+
   return (
-    <Link href={href}
-      className="flex items-center justify-between px-4 py-3 transition-colors hover:bg-white/[0.03] border-b last:border-0"
-      style={{ borderColor: 'var(--glass-border)' }}>
-      <div className="flex items-center gap-3">
-        <Avatar name={p.customer_name} />
-        <div>
-          <p className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{p.customer_name}</p>
-          <p className="text-xs" style={{ color: 'var(--muted)' }}>{periodLabel(p)} · {dueLabel(p)}</p>
+    <div className="flex items-center border-b last:border-0" style={{ borderColor: 'var(--glass-border)' }}>
+      <Link href={href}
+        className="flex-1 flex items-center justify-between px-4 py-3 transition-colors hover:bg-white/[0.03] min-w-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <Avatar name={p.customer_name} />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold truncate" style={{ color: 'var(--text)' }}>{p.customer_name}</p>
+            <p className="text-xs" style={{ color: 'var(--muted)' }}>{periodLabel(p)} · {dueLabel(p)}</p>
+          </div>
         </div>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <p className="text-sm font-bold" style={{ color: amountColor }}>{fmtFull(amount)}</p>
-        <ChevronRight className="w-3.5 h-3.5" style={{ color: 'var(--muted-2)' }} />
-      </div>
-    </Link>
+        <div className="flex items-center gap-1.5 flex-shrink-0 ml-2">
+          <p className="text-sm font-bold" style={{ color: amountColor }}>{fmtFull(amount)}</p>
+          <ChevronRight className="w-3.5 h-3.5" style={{ color: 'var(--muted-2)' }} />
+        </div>
+      </Link>
+      {waPhone && waMsg && (
+        <a href={`https://wa.me/${waPhone}?text=${waMsg}`}
+          target="_blank" rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          className="px-3 self-stretch flex items-center justify-center flex-shrink-0 transition-colors hover:bg-white/[0.04]"
+          style={{ borderLeft: '1px solid var(--glass-border)' }}
+          title={`WhatsApp ${firstName}`}>
+          <MessageCircle className="w-4 h-4" style={{ color: '#25d366' }} />
+        </a>
+      )}
+    </div>
   );
 }
+
+// ─── Capital entry type (stored in localStorage) ──────────────────────────────
+interface CapitalEntry { id: string; date: string; amount: number; note: string }
+
+const CAP_KEY = 'ft_capital_entries';
+function loadEntries(): CapitalEntry[] {
+  try { return JSON.parse(localStorage.getItem(CAP_KEY) || '[]'); } catch { return []; }
+}
+function saveEntries(e: CapitalEntry[]) { localStorage.setItem(CAP_KEY, JSON.stringify(e)); }
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Capital tracking
+  const [capEntries, setCapEntries]     = useState<CapitalEntry[]>([]);
+  const [showCapEdit, setShowCapEdit]   = useState(false);
+  const [capDate, setCapDate]           = useState('');
+  const [capAmount, setCapAmount]       = useState('');
+  const [capNote, setCapNote]           = useState('');
+  const [editingCapId, setEditingCapId] = useState<string | null>(null);
+
+  useEffect(() => { setCapEntries(loadEntries()); }, []);
+
+  const addCapEntry = () => {
+    const amt = parseFloat(capAmount.replace(/,/g, '')) || 0;
+    if (!capDate || amt <= 0) return;
+    let next: CapitalEntry[];
+    if (editingCapId) {
+      next = capEntries.map(e => e.id === editingCapId ? { ...e, date: capDate, amount: amt, note: capNote } : e);
+    } else {
+      next = [...capEntries, { id: Date.now().toString(), date: capDate, amount: amt, note: capNote }];
+    }
+    next.sort((a, b) => a.date.localeCompare(b.date));
+    saveEntries(next);
+    setCapEntries(next);
+    setCapDate(''); setCapAmount(''); setCapNote(''); setEditingCapId(null); setShowCapEdit(false);
+  };
+
+  const deleteCapEntry = (id: string) => {
+    const next = capEntries.filter(e => e.id !== id);
+    saveEntries(next); setCapEntries(next);
+  };
+
+  const startEdit = (e: CapitalEntry) => {
+    setEditingCapId(e.id); setCapDate(e.date);
+    setCapAmount(String(e.amount)); setCapNote(e.note); setShowCapEdit(true);
+  };
 
   const load = () => {
     setLoading(true);
@@ -125,6 +190,37 @@ export default function DashboardPage() {
   const interestEarned = data?.stats?.interest_earned || 0;
   const overdueCount = data?.overduePayments?.length || 0;
   const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  // New computed metrics
+  const todayDue       = data?.stats?.today_due       || 0;
+  const todayCollected = data?.stats?.today_collected  || 0;
+  const todayPct       = todayDue > 0 ? Math.min(100, Math.round((todayCollected / todayDue) * 100)) : 0;
+  const activeLoans    = data?.stats?.active_loans     || 0;
+  const completedLoans = data?.stats?.completed_loans  || 0;
+  const totalLoans     = activeLoans + completedLoans;
+  const avgLoan        = activeLoans > 0 ? Math.round(totalPrincipal / activeLoans) : 0;
+  const interestTotal  = interestEarned + interestPending;
+  const interestEarnedPct = interestTotal > 0 ? Math.round((interestEarned / interestTotal) * 100) : 0;
+  const completionRate = totalLoans > 0 ? Math.round((completedLoans / totalLoans) * 100) : 0;
+
+  // Capital & compounding metrics
+  const totalOwnCapital   = capEntries.reduce((s, e) => s + e.amount, 0);
+  const compoundedGrowth  = Math.max(0, totalPrincipal - totalOwnCapital);
+  const roiPct            = totalOwnCapital > 0 ? (compoundedGrowth / totalOwnCapital) * 100 : 0;
+  const capitalMultiplier = totalOwnCapital > 0 ? totalPrincipal / totalOwnCapital : 0;
+  const ownPct            = totalPrincipal > 0 && totalOwnCapital > 0
+    ? Math.min(100, Math.round((totalOwnCapital / totalPrincipal) * 100))
+    : 100;
+  const compPct = 100 - ownPct;
+
+  // Month-over-month growth from last two months in chart data
+  const momGrowth = (() => {
+    if (chartData.length < 2) return null;
+    const last = chartData[chartData.length - 1]?.amount || 0;
+    const prev = chartData[chartData.length - 2]?.amount || 0;
+    if (prev === 0) return null;
+    return Math.round(((last - prev) / prev) * 100);
+  })();
 
   return (
     <div className="pb-28 min-h-screen" style={{ background: 'var(--bg)' }}>
@@ -173,42 +269,340 @@ export default function DashboardPage() {
 
             <div className="grid grid-cols-3 gap-2.5">
               {[
-                { label: 'Interest Due', value: fmt(interestPending), sub: null },
-                { label: 'Earned', value: fmt(interestEarned), sub: null },
-                { label: 'Overdue', value: String(overdueCount), red: overdueCount > 0 },
-              ].map(({ label, value, red }) => (
+                { label: 'Interest Due',  value: fmt(interestPending), accent: false },
+                { label: 'Int. Earned',   value: fmt(interestEarned),  accent: false },
+                { label: 'Overdue pymts', value: String(overdueCount),  accent: overdueCount > 0 },
+              ].map(({ label, value, accent }) => (
                 <div key={label} className="rounded-xl px-3 py-2.5"
                   style={{ background: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(8px)', border: '1px solid rgba(255,255,255,0.15)' }}>
                   <p className="text-white/55 text-[10px] uppercase tracking-wide mb-1">{label}</p>
-                  <p className={`font-black text-base leading-none ${red ? 'text-red-300' : 'text-white'}`}>{value}</p>
+                  <p className={`font-black text-base leading-none ${accent ? 'text-red-300' : 'text-white'}`}>{value}</p>
                 </div>
               ))}
             </div>
+
+            {/* Recovery strip */}
+            {totalPrincipal > 0 && (
+              <div className="mt-3 pt-3" style={{ borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-white/55 text-[10px] uppercase tracking-wide">Completion rate</span>
+                  <span className="text-white text-xs font-bold">{completionRate}% loans closed</span>
+                </div>
+                <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.12)' }}>
+                  <div className="h-full rounded-full transition-all duration-700"
+                    style={{
+                      width: `${completionRate}%`,
+                      background: 'linear-gradient(90deg, #34d399, #10B981)',
+                      boxShadow: '0 0 8px rgba(16,185,129,0.5)',
+                    }} />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* ── Bento stats row ── */}
+        {/* ── Capital & Compounding ── */}
+        <div className="card overflow-hidden"
+          style={{ borderColor: compoundedGrowth > 0 ? 'rgba(16,185,129,0.25)' : 'rgba(139,92,246,0.2)' }}>
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 pt-4 pb-3"
+            style={{ borderBottom: '1px solid var(--glass-border)' }}>
+            <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
+              <TrendingUp className="w-4 h-4" style={{ color: 'var(--green)' }} />
+              Capital &amp; Compounding
+            </h3>
+            <button
+              onClick={() => { setShowCapEdit(v => !v); setEditingCapId(null); setCapDate(''); setCapAmount(''); setCapNote(''); }}
+              className="text-xs font-semibold px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1"
+              style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)' }}>
+              + Add Capital
+            </button>
+          </div>
+
+          {/* Add / edit form */}
+          {showCapEdit && (
+            <div className="px-4 py-3 space-y-2.5" style={{ background: 'rgba(139,92,246,0.04)', borderBottom: '1px solid var(--glass-border)' }}>
+              <p className="text-xs font-semibold" style={{ color: 'var(--purple)' }}>
+                {editingCapId ? 'Edit entry' : 'New capital entry'}
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: 'var(--muted-2)' }}>Date invested</label>
+                  <input type="date" value={capDate} onChange={e => setCapDate(e.target.value)}
+                    className="input py-2 text-sm w-full" />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: 'var(--muted-2)' }}>Amount (₹)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm" style={{ color: 'var(--muted)' }}>₹</span>
+                    <input type="number" value={capAmount} onChange={e => setCapAmount(e.target.value)}
+                      className="input pl-7 py-2 text-sm w-full" placeholder="300000" />
+                  </div>
+                </div>
+              </div>
+              <div>
+                <label className="text-[10px] uppercase tracking-wide block mb-1" style={{ color: 'var(--muted-2)' }}>Note (optional)</label>
+                <input value={capNote} onChange={e => setCapNote(e.target.value)}
+                  className="input py-2 text-sm w-full" placeholder="e.g. Initial investment, Reinvestment batch…" />
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => { setShowCapEdit(false); setEditingCapId(null); }}
+                  className="btn-ghost flex-1 py-2 text-xs justify-center">Cancel</button>
+                <button onClick={addCapEntry}
+                  disabled={!capDate || !capAmount}
+                  className="flex-1 py-2 rounded-xl text-xs font-bold text-white flex items-center justify-center gap-1.5 disabled:opacity-40"
+                  style={{ background: 'linear-gradient(135deg, var(--purple), var(--pink))' }}>
+                  <Check className="w-3.5 h-3.5" strokeWidth={3} />
+                  {editingCapId ? 'Update' : 'Add Entry'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Capital entries list */}
+          {capEntries.length > 0 && (
+            <div style={{ borderBottom: '1px solid var(--glass-border)' }}>
+              {capEntries.map((e, i) => (
+                <div key={e.id} className="flex items-center justify-between px-4 py-2.5"
+                  style={{ borderBottom: i < capEntries.length - 1 ? '1px solid var(--glass-border)' : 'none' }}>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                      style={{ background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                      <IndianRupee className="w-3.5 h-3.5" style={{ color: 'var(--purple)' }} />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{fmtFull(e.amount)}</p>
+                      <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                        {new Date(e.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                        {e.note ? ` · ${e.note}` : ''}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button onClick={() => startEdit(e)}
+                      className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-white/[0.06]"
+                      style={{ color: 'var(--muted)' }}>
+                      <Pencil className="w-3 h-3" />
+                    </button>
+                    <button onClick={() => deleteCapEntry(e.id)}
+                      className="w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-red-500/10"
+                      style={{ color: 'var(--muted)' }}>
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Metrics */}
+          {totalOwnCapital > 0 ? (
+            <div className="px-4 pt-4 pb-4 space-y-4">
+              {/* Stacked ownership bar */}
+              <div>
+                <div className="flex items-center justify-between mb-2 text-[11px]" style={{ color: 'var(--muted)' }}>
+                  <span>Own capital <strong style={{ color: 'var(--text)' }}>{ownPct}%</strong></span>
+                  <span>Compounded <strong style={{ color: 'var(--green)' }}>{compPct}%</strong></span>
+                </div>
+                <div className="flex h-5 rounded-full overflow-hidden" style={{ gap: '2px' }}>
+                  <div className="h-full flex items-center justify-center transition-all duration-700 rounded-l-full"
+                    style={{
+                      width: `${ownPct}%`,
+                      background: 'linear-gradient(90deg, #7c3aed, #8b5cf6)',
+                      boxShadow: '0 0 8px rgba(139,92,246,0.4)',
+                    }}>
+                    {ownPct >= 25 && <span className="text-[9px] font-bold text-white px-1">Yours</span>}
+                  </div>
+                  {compPct > 0 && (
+                    <div className="h-full flex items-center justify-center transition-all duration-700 rounded-r-full"
+                      style={{
+                        width: `${compPct}%`,
+                        background: 'linear-gradient(90deg, #059669, #10B981)',
+                        boxShadow: '0 0 8px rgba(16,185,129,0.4)',
+                      }}>
+                      {compPct >= 15 && <span className="text-[9px] font-bold text-white px-1">Earned</span>}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* 4 KPI grid */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl p-3" style={{ background: 'rgba(139,92,246,0.08)', border: '1px solid rgba(139,92,246,0.15)' }}>
+                  <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: 'var(--muted-2)' }}>Own Capital</p>
+                  <p className="text-lg font-black" style={{ color: 'var(--text)' }}>{fmt(totalOwnCapital)}</p>
+                  <p className="text-[11px]" style={{ color: 'var(--muted)' }}>{fmtFull(totalOwnCapital)}</p>
+                </div>
+                <div className="rounded-xl p-3" style={{ background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.15)' }}>
+                  <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: 'var(--muted-2)' }}>Compounded</p>
+                  <p className="text-lg font-black" style={{ color: compoundedGrowth > 0 ? 'var(--green)' : 'var(--muted)' }}>
+                    +{fmt(compoundedGrowth)}
+                  </p>
+                  <p className="text-[11px]" style={{ color: 'var(--muted)' }}>{compoundedGrowth > 0 ? fmtFull(compoundedGrowth) : 'Not yet'}</p>
+                </div>
+                <div className="rounded-xl p-3" style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.15)' }}>
+                  <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: 'var(--muted-2)' }}>Return on Capital</p>
+                  <p className="text-lg font-black" style={{ color: roiPct > 0 ? 'var(--amber)' : 'var(--muted)' }}>
+                    {roiPct.toFixed(1)}%
+                  </p>
+                  <p className="text-[11px]" style={{ color: 'var(--muted)' }}>total ROI</p>
+                </div>
+                <div className="rounded-xl p-3" style={{ background: 'rgba(6,182,212,0.08)', border: '1px solid rgba(6,182,212,0.15)' }}>
+                  <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: 'var(--muted-2)' }}>Multiplier</p>
+                  <p className="text-lg font-black" style={{ color: '#22d3ee' }}>
+                    {capitalMultiplier > 0 ? capitalMultiplier.toFixed(2) : '—'}×
+                  </p>
+                  <p className="text-[11px]" style={{ color: 'var(--muted)' }}>capital growth</p>
+                </div>
+              </div>
+
+              {/* Timeline */}
+              {capEntries.length > 1 && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide mb-2" style={{ color: 'var(--muted-2)' }}>Investment timeline</p>
+                  <div className="relative pl-4">
+                    <div className="absolute left-1.5 top-0 bottom-0 w-px" style={{ background: 'rgba(139,92,246,0.3)' }} />
+                    {capEntries.map((e, i) => {
+                      const running = capEntries.slice(0, i + 1).reduce((s, x) => s + x.amount, 0);
+                      return (
+                        <div key={e.id} className="relative mb-3 last:mb-0">
+                          <div className="absolute -left-[11px] w-3 h-3 rounded-full border-2"
+                            style={{ background: 'var(--bg)', borderColor: 'var(--purple)', top: '3px' }} />
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <p className="text-xs font-semibold" style={{ color: 'var(--text)' }}>
+                                {fmtFull(e.amount)}
+                                {e.note ? <span className="font-normal" style={{ color: 'var(--muted)' }}> · {e.note}</span> : ''}
+                              </p>
+                              <p className="text-[11px]" style={{ color: 'var(--muted)' }}>
+                                {new Date(e.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                              </p>
+                            </div>
+                            <span className="text-[11px] font-bold" style={{ color: 'var(--muted)' }}>
+                              Σ {fmt(running)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <div className="relative mb-0">
+                      <div className="absolute -left-[11px] w-3 h-3 rounded-full border-2"
+                        style={{ background: 'var(--green)', borderColor: '#10B981', top: '3px', boxShadow: '0 0 6px rgba(16,185,129,0.6)' }} />
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <p className="text-xs font-semibold" style={{ color: 'var(--green)' }}>Now (deployed)</p>
+                          <p className="text-[11px]" style={{ color: 'var(--muted)' }}>incl. compounded returns</p>
+                        </div>
+                        <span className="text-[11px] font-bold" style={{ color: 'var(--green)' }}>{fmt(totalPrincipal)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="px-4 py-5 text-center">
+              <div className="w-10 h-10 rounded-full mx-auto mb-2 flex items-center justify-center"
+                style={{ background: 'rgba(139,92,246,0.12)' }}>
+                <IndianRupee className="w-5 h-5" style={{ color: 'var(--purple)' }} />
+              </div>
+              <p className="text-sm font-semibold mb-1" style={{ color: 'var(--text)' }}>Track your capital growth</p>
+              <p className="text-xs leading-relaxed" style={{ color: 'var(--muted)' }}>
+                Add your initial investments to see how much has been compounded from interest reinvestment.
+              </p>
+              <button onClick={() => setShowCapEdit(true)}
+                className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg"
+                style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                + Add first entry
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* ── Today's Snapshot ── */}
+        {(todayDue > 0 || todayCollected > 0) && (() => {
+          const sz = 84, sw = 10, r = (sz - sw) / 2, circ = 2 * Math.PI * r;
+          const filled = (todayPct / 100) * circ;
+          const color = todayPct >= 100 ? '#10B981' : todayPct >= 60 ? '#f59e0b' : '#8b5cf6';
+          return (
+            <div className="card p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
+                  <Target className="w-4 h-4" style={{ color: 'var(--amber)' }} />
+                  Today&apos;s Collections
+                </h3>
+                <Link href="/collect"
+                  className="text-xs font-semibold flex items-center gap-0.5 px-2.5 py-1 rounded-lg transition-colors"
+                  style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                  Collect <ArrowUpRight className="w-3 h-3" />
+                </Link>
+              </div>
+              <div className="flex items-center gap-4">
+                {/* SVG ring */}
+                <div className="relative flex-shrink-0">
+                  <svg width={sz} height={sz} className="-rotate-90">
+                    <circle cx={sz/2} cy={sz/2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={sw} />
+                    {todayPct > 0 && (
+                      <circle cx={sz/2} cy={sz/2} r={r} fill="none"
+                        stroke={color} strokeWidth={sw} strokeLinecap="round"
+                        strokeDasharray={`${Math.min(filled, circ)} ${circ}`}
+                        style={{ filter: `drop-shadow(0 0 6px ${color}80)`, transition: 'stroke-dasharray 0.7s ease' }} />
+                    )}
+                  </svg>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center">
+                    <p className="text-lg font-black leading-none" style={{ color }}>{todayPct}%</p>
+                    <p className="text-[9px] uppercase tracking-wide mt-0.5" style={{ color: 'var(--muted)' }}>done</p>
+                  </div>
+                </div>
+                {/* Stats */}
+                <div className="flex-1 min-w-0 space-y-2.5">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Collected</p>
+                    <p className="text-xl font-black leading-tight" style={{ color: todayCollected > 0 ? 'var(--green)' : 'var(--muted)' }}>
+                      {fmtFull(todayCollected)}
+                    </p>
+                  </div>
+                  <div className="h-px" style={{ background: 'var(--glass-border)' }} />
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Expected today</p>
+                    <p className="text-base font-bold leading-tight" style={{ color: 'var(--text)' }}>
+                      {fmtFull(todayDue)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              {todayPct >= 100 && (
+                <div className="mt-3 flex items-center gap-2 text-xs font-semibold px-3 py-2 rounded-xl"
+                  style={{ background: 'rgba(16,185,129,0.1)', color: 'var(--green)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  All collections done for today! 🎉
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* ── 4-stat mini grid ── */}
         <div className="grid grid-cols-2 gap-3">
-          <div className="card p-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-              style={{ background: 'rgba(139,92,246,0.15)', border: '1px solid rgba(139,92,246,0.2)' }}>
-              <Users className="w-5 h-5" style={{ color: 'var(--purple)' }} />
+          {[
+            { icon: Users,        label: 'Borrowers',   value: data?.stats?.total_customers || 0, color: 'var(--purple)', bg: 'rgba(139,92,246,0.15)', border: 'rgba(139,92,246,0.2)', isFmt: false },
+            { icon: Activity,     label: 'Active Loans', value: activeLoans,                       color: 'var(--green)',  bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.2)',  isFmt: false },
+            { icon: CheckCircle2, label: 'Completed',   value: completedLoans,                    color: '#60a5fa',      bg: 'rgba(96,165,250,0.12)', border: 'rgba(96,165,250,0.2)',  isFmt: false },
+            { icon: IndianRupee,  label: 'Avg Loan',    value: avgLoan,                            color: 'var(--amber)', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.2)',  isFmt: true  },
+          ].map(({ icon: Icon, label, value, color, bg, border, isFmt }) => (
+            <div key={label} className="card p-4 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                style={{ background: bg, border: `1px solid ${border}` }}>
+                <Icon className="w-5 h-5" style={{ color }} />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xl font-black truncate" style={{ color: 'var(--text)' }}>
+                  {isFmt ? fmt(value as number) : value}
+                </p>
+                <p className="text-xs" style={{ color: 'var(--muted)' }}>{label}</p>
+              </div>
             </div>
-            <div>
-              <p className="text-2xl font-black" style={{ color: 'var(--text)' }}>{data?.stats?.total_customers || 0}</p>
-              <p className="text-xs" style={{ color: 'var(--muted)' }}>Borrowers</p>
-            </div>
-          </div>
-          <div className="card p-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-              style={{ background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.2)' }}>
-              <CheckCircle2 className="w-5 h-5" style={{ color: 'var(--green)' }} />
-            </div>
-            <div>
-              <p className="text-2xl font-black" style={{ color: 'var(--text)' }}>{data?.stats?.completed_loans || 0}</p>
-              <p className="text-xs" style={{ color: 'var(--muted)' }}>Completed</p>
-            </div>
-          </div>
+          ))}
         </div>
 
         {/* ── This week progress ── */}
@@ -242,6 +636,127 @@ export default function DashboardPage() {
           </p>
         </div>
 
+        {/* ── Interest Income Funnel ── */}
+        {interestTotal > 0 && (
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
+                <Banknote className="w-4 h-4" style={{ color: 'var(--amber)' }} />
+                Interest Income
+              </h3>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-bold px-2 py-0.5 rounded-lg"
+                  style={{
+                    background: interestEarnedPct >= 80 ? 'rgba(16,185,129,0.15)' : 'rgba(245,158,11,0.15)',
+                    color:      interestEarnedPct >= 80 ? 'var(--green)' : '#fbbf24',
+                    border:     `1px solid ${interestEarnedPct >= 80 ? 'rgba(16,185,129,0.25)' : 'rgba(245,158,11,0.2)'}`,
+                  }}>
+                  {interestEarnedPct}% collected
+                </span>
+              </div>
+            </div>
+
+            {/* Segmented bar */}
+            <div className="h-4 rounded-full overflow-hidden flex mb-3" style={{ background: 'var(--glass-bg-2)' }}>
+              {interestEarned > 0 && (
+                <div className="h-full transition-all duration-700 relative"
+                  style={{
+                    width: `${interestEarnedPct}%`,
+                    background: 'linear-gradient(90deg, #10B981, #34d399)',
+                    boxShadow: '0 0 10px rgba(16,185,129,0.4)',
+                  }}>
+                  {interestEarnedPct >= 20 && (
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-white">
+                      Earned
+                    </span>
+                  )}
+                </div>
+              )}
+              {interestPending > 0 && (
+                <div className="h-full transition-all duration-700 relative"
+                  style={{
+                    width: `${100 - interestEarnedPct}%`,
+                    background: 'linear-gradient(90deg, rgba(245,158,11,0.45), rgba(245,158,11,0.25))',
+                    border: '1px solid rgba(245,158,11,0.3)',
+                  }}>
+                  {(100 - interestEarnedPct) >= 20 && (
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold" style={{ color: '#fbbf24' }}>
+                      Pending
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Two stat columns */}
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-1">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="w-2 h-2 rounded-full" style={{ background: '#10B981', boxShadow: '0 0 4px #10B981' }} />
+                  <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Earned</span>
+                </div>
+                <p className="text-base font-black" style={{ color: 'var(--green)' }}>{fmt(interestEarned)}</p>
+                <p className="text-[10px]" style={{ color: 'var(--muted)' }}>{fmtFull(interestEarned)}</p>
+              </div>
+              <div className="col-span-1">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="w-2 h-2 rounded-full" style={{ background: '#f59e0b' }} />
+                  <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Pending</span>
+                </div>
+                <p className="text-base font-black" style={{ color: 'var(--amber)' }}>{fmt(interestPending)}</p>
+                <p className="text-[10px]" style={{ color: 'var(--muted)' }}>{fmtFull(interestPending)}</p>
+              </div>
+              <div className="col-span-1">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="w-2 h-2 rounded-full" style={{ background: 'var(--purple)' }} />
+                  <span className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Total</span>
+                </div>
+                <p className="text-base font-black" style={{ color: 'var(--text)' }}>{fmt(interestTotal)}</p>
+                <p className="text-[10px]" style={{ color: 'var(--muted)' }}>{fmtFull(interestTotal)}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Portfolio Health ── */}
+        {totalLoans > 0 && (
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
+                <TrendingUp className="w-4 h-4" style={{ color: '#60a5fa' }} />
+                Portfolio Health
+              </h3>
+              <span className="text-xs" style={{ color: 'var(--muted)' }}>{totalLoans} total loans</span>
+            </div>
+            <div className="space-y-2.5">
+              {([
+                { label: 'Active',     val: activeLoans,    total: totalLoans, color: '#8b5cf6', bg: 'rgba(139,92,246,0.18)', suffix: '' },
+                { label: 'Completed',  val: completedLoans, total: totalLoans, color: '#10B981', bg: 'rgba(16,185,129,0.15)', suffix: '' },
+                { label: 'Overdue ℗',  val: overdueCount,   total: Math.max(overdueCount, activeLoans), color: '#fb7185', bg: 'rgba(244,63,94,0.15)', suffix: ' pymts' },
+              ]).map(({ label, val, total, color, bg, suffix }) => {
+                const pct = total > 0 ? Math.round((val / total) * 100) : 0;
+                return (
+                  <div key={label}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-xs font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
+                        <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color, boxShadow: `0 0 4px ${color}` }} />
+                        {label}
+                      </span>
+                      <span className="text-xs font-bold" style={{ color }}>
+                        {val}{suffix ?? ''} <span className="font-normal" style={{ color: 'var(--muted)' }}>({pct}%)</span>
+                      </span>
+                    </div>
+                    <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--glass-bg-2)' }}>
+                      <div className="h-full rounded-full transition-all duration-700"
+                        style={{ width: `${pct}%`, background: bg, border: `1px solid ${color}40` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* ── Overdue ── */}
         {overdueCount > 0 && (
           <div className="card overflow-hidden" style={{ borderColor: 'rgba(244,63,94,0.25)' }}>
@@ -266,6 +781,7 @@ export default function DashboardPage() {
                   href={`/loans/${p.loanId ?? (p as any).loan_id}`}
                   amountColor="var(--red)"
                   amount={(p.expectedAmount ?? p.expected_amount) - (p.paidAmount ?? p.paid_amount)}
+                  showWa
                 />
               ))}
             </div>
@@ -375,9 +891,24 @@ export default function DashboardPage() {
                 <TrendingUp className="w-4 h-4" style={{ color: 'var(--purple)' }} />
                 Monthly Collections
               </h3>
-              <span className="text-xs" style={{ color: 'var(--muted)' }}>
-                Last {chartData.length} month{chartData.length !== 1 ? 's' : ''}
-              </span>
+              <div className="flex items-center gap-2">
+                {momGrowth !== null && (
+                  <span className="text-xs font-bold px-2 py-0.5 rounded-lg flex items-center gap-1"
+                    style={{
+                      background: momGrowth >= 0 ? 'rgba(16,185,129,0.15)' : 'rgba(244,63,94,0.15)',
+                      color:      momGrowth >= 0 ? 'var(--green)' : 'var(--red)',
+                      border:     `1px solid ${momGrowth >= 0 ? 'rgba(16,185,129,0.25)' : 'rgba(244,63,94,0.25)'}`,
+                    }}>
+                    {momGrowth >= 0
+                      ? <TrendingUp className="w-3 h-3" />
+                      : <TrendingDown className="w-3 h-3" />}
+                    {momGrowth >= 0 ? '+' : ''}{momGrowth}% MoM
+                  </span>
+                )}
+                <span className="text-xs" style={{ color: 'var(--muted)' }}>
+                  {chartData.length}mo
+                </span>
+              </div>
             </div>
             <ResponsiveContainer width="100%" height={150}>
               <AreaChart data={chartData} margin={{ top: 4, right: 4, left: -24, bottom: 0 }}>
