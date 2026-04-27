@@ -104,9 +104,20 @@ export default function CustomerDetailPage({ params }: { params: Promise<{ id: s
   const activePrincipal = loans.filter(l => l.status === 'active').reduce((s, l) => s + l.principal, 0);
   const dailyCount = loans.filter(l => l.planType === 'daily' && l.status === 'active').length;
   const weeklyCount = loans.filter(l => l.planType === 'weekly' && l.status === 'active').length;
-  const whatsappUrl = customer.phone
-    ? `https://wa.me/${customer.phone.replace(/\D/g, '').slice(-10).padStart(12, '91')}`
+  const waPhone = customer.phone
+    ? customer.phone.replace(/\D/g, '').replace(/^0/, '').replace(/^(?!91)/, '91')
     : null;
+  const waMessage = (() => {
+    const firstName = customer.name.split(' ')[0] || customer.name;
+    if (summary.overdueAmount > 0) {
+      return `Hi ${firstName}, you have overdue payments totaling ₹${summary.overdueAmount.toLocaleString('en-IN')}. Please clear at the earliest. 🙏`;
+    }
+    if (summary.dueTodayAmount > 0) {
+      return `Hi ${firstName}, your payment of ₹${summary.dueTodayAmount.toLocaleString('en-IN')} is due today. Please pay at your earliest convenience. 🙏`;
+    }
+    return `Hi ${firstName}, please ensure your upcoming payments are on time. Thank you! 🙏`;
+  })();
+  const whatsappUrl = waPhone ? `https://wa.me/${waPhone}?text=${encodeURIComponent(waMessage)}` : null;
 
   return (
     <div className="pb-28 min-h-screen" style={{ background: 'var(--bg)' }}>

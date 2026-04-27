@@ -7,7 +7,11 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "smoke": "node scripts/smoke-test.mjs"
+    "smoke": "node scripts/smoke-test.mjs",
+    "export:firebase": "node scripts/firebase-export.mjs",
+    "fix:dates": "node scripts/fix-paid-dates.mjs",
+    "import:supabase": "node scripts/supabase-bulk-import.mjs",
+    "migrate": "node scripts/reset-and-migrate.mjs"
   },
   "dependencies": {
     "@react-pdf/renderer": "^4.5.1",

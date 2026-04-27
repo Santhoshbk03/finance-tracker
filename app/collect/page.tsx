@@ -708,6 +708,33 @@ function CollectInner() {
   );
 }
 
+// ─── WhatsApp message builder ───
+function buildWaMessage(borrower: BorrowerRow): string {
+  const firstName = borrower.customerName.split(' ')[0] || borrower.customerName;
+
+  const overdueLoans = borrower.loans.filter(l => l.bucket === 'overdue' && l.amountDue > 0);
+  const todayLoans   = borrower.loans.filter(l => l.bucket === 'today'   && l.amountDue > 0);
+
+  if (overdueLoans.length === 1) {
+    const l = overdueLoans[0];
+    return `Hi ${firstName}, your ${l.planType} payment of ₹${l.amountDue.toLocaleString('en-IN')} (Period ${l.periodNumber}) is overdue. Please clear at the earliest. 🙏`;
+  }
+  if (overdueLoans.length > 1) {
+    const total = overdueLoans.reduce((s, l) => s + l.amountDue, 0);
+    return `Hi ${firstName}, you have ${overdueLoans.length} overdue payments totaling ₹${total.toLocaleString('en-IN')}. Please clear at the earliest. 🙏`;
+  }
+  if (todayLoans.length === 1) {
+    const l = todayLoans[0];
+    return `Hi ${firstName}, your ${l.planType} payment of ₹${l.expectedAmount.toLocaleString('en-IN')} is due today (Period ${l.periodNumber}). Please pay at your earliest convenience. 🙏`;
+  }
+  if (todayLoans.length > 1) {
+    const total = todayLoans.reduce((s, l) => s + l.amountDue, 0);
+    return `Hi ${firstName}, you have ${todayLoans.length} payments totaling ₹${total.toLocaleString('en-IN')} due today. Please pay at your earliest convenience. 🙏`;
+  }
+  // Fallback (paid / zero due)
+  return `Hi ${firstName}, please ensure your upcoming payments are on time. Thank you! 🙏`;
+}
+
 // ─── Borrower Card ───
 function BorrowerCard({
   borrower, date, editingMap, setEditingMap, savingMap, onCollect,
@@ -788,7 +815,7 @@ function BorrowerCard({
             )}
             {waPhone && (
               <a
-                href={`https://wa.me/${waPhone}?text=${encodeURIComponent('Hi, your payment is due today.')}`}
+                href={`https://wa.me/${waPhone}?text=${encodeURIComponent(buildWaMessage(borrower))}`}
                 target="_blank" rel="noopener noreferrer"
                 className="text-xs font-semibold flex items-center gap-1 px-2 py-0.5 rounded-md transition-colors"
                 style={{ background: 'rgba(37,211,102,0.12)', color: '#25d366', border: '1px solid rgba(37,211,102,0.2)' }}>

@@ -6,7 +6,7 @@ import {
   ChevronLeft, Phone, MapPin, FileText, CheckCircle2,
   Clock, AlertTriangle, IndianRupee, Pencil, X, Check,
   ChevronDown, ChevronUp, Calendar, Trash2, Banknote,
-  ListChecks, Square, Loader2, Settings2, RefreshCw,
+  ListChecks, Square, Loader2, Settings2, RefreshCw, MessageCircle,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
@@ -237,6 +237,49 @@ function PaymentRow({
   );
 }
 
+// ─── WhatsApp loan-statement message ───────────────────────────────────────────
+function buildLoanWaMessage(loan: Loan): string {
+  const firstName = (loan.customerName ?? loan.customer_name ?? '').split(' ')[0] || 'there';
+  const isDaily = loan.planType === 'daily';
+  const totalPeriods = loan.totalPeriods ?? loan.total_weeks ?? 0;
+  const periodAmt = loan.periodAmount ?? loan.weekly_amount ?? 0;
+  const today = new Date().toISOString().split('T')[0];
+
+  const paidCount = loan.payments.filter(p => {
+    const paid = p.paidAmount ?? p.paid_amount ?? 0;
+    const exp  = p.expectedAmount ?? p.expected_amount ?? 0;
+    return exp > 0 && paid >= exp;
+  }).length;
+
+  const overdueCount = loan.payments.filter(p => {
+    const paid = p.paidAmount ?? p.paid_amount ?? 0;
+    const exp  = p.expectedAmount ?? p.expected_amount ?? 0;
+    const due  = p.dueDate ?? p.due_date ?? '';
+    return exp > 0 && paid < exp && due < today;
+  }).length;
+
+  const totalCollected = loan.payments.reduce((s, p) => s + (p.paidAmount ?? p.paid_amount ?? 0), 0);
+  const outstanding = Math.max(0, loan.principal - totalCollected);
+
+  const fmt = (n: number) => '₹' + n.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+
+  let msg = `Hi ${firstName} 👋\n\n*Loan Statement*\n`;
+  msg += `• Principal: ${fmt(loan.principal)}\n`;
+  msg += `• ${isDaily ? 'Daily' : 'Weekly'} payment: ${fmt(periodAmt)}\n`;
+  msg += `• Progress: ${paidCount}/${totalPeriods} ${isDaily ? 'days' : 'weeks'} paid\n`;
+  msg += `• Collected so far: ${fmt(totalCollected)}\n`;
+  if (outstanding > 0) msg += `• Outstanding: ${fmt(outstanding)}\n`;
+
+  if (overdueCount > 0) {
+    msg += `\n⚠️ You have ${overdueCount} overdue payment${overdueCount > 1 ? 's' : ''}. Please clear at the earliest. 🙏`;
+  } else if (loan.status === 'completed') {
+    msg += `\n✅ Loan fully paid — thank you! 🙏`;
+  } else {
+    msg += `\nThank you for your regular payments! 🙏`;
+  }
+  return msg;
+}
+
 export default function LoanDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
@@ -304,9 +347,9 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
       loanTermPeriods: String(loan.loanTermPeriods ?? loan.loan_term_weeks ?? 0),
       startDate:       loan.startDate ?? loan.start_date ?? '',
       planType:        (loan.planType ?? 'weekly') as 'weekly' | 'daily',
-      useCustomInterest: false,
+      useCustomInterest: true,
       customInterestMode: 'fixed',
-      customInterestVal: String(loan.interestAmount ?? loan.interest_amount ?? ''),
+      customInterestVal: String(loan.interestAmount ?? loan.interest_amount ?? 0),
     });
   }, [loan]);
 
@@ -704,9 +747,24 @@ export default function LoanDetailPage({ params }: { params: Promise<{ id: strin
                 {isDaily && <span className="pill" style={{ background: 'rgba(6,182,212,0.12)', color: '#22d3ee', border: '1px solid rgba(6,182,212,0.2)' }}>Daily</span>}
               </div>
               {phone && (
-                <p className="text-sm flex items-center gap-1.5 mt-1" style={{ color: 'var(--muted)' }}>
-                  <Phone className="w-3.5 h-3.5" /> {phone}
-                </p>
+                <div className="flex items-center gap-2 flex-wrap mt-1">
+                  <a href={`tel:${phone}`}
+                    className="text-sm flex items-center gap-1.5" style={{ color: 'var(--muted)' }}>
+                    <Phone className="w-3.5 h-3.5" /> {phone}
+                  </a>
+                  {(() => {
+                    const waPhone = phone.replace(/\D/g, '').replace(/^0/, '').replace(/^(?!91)/, '91');
+                    return (
+                      <a
+                        href={`https://wa.me/${waPhone}?text=${encodeURIComponent(buildLoanWaMessage(loan))}`}
+                        target="_blank" rel="noopener noreferrer"
+                        className="text-xs font-semibold flex items-center gap-1 px-2 py-0.5 rounded-md transition-colors"
+                        style={{ background: 'rgba(37,211,102,0.12)', color: '#25d366', border: '1px solid rgba(37,211,102,0.2)' }}>
+                        <MessageCircle className="w-3 h-3" /> WhatsApp
+                      </a>
+                    );
+                  })()}
+                </div>
               )}
               {address && (
                 <p className="text-sm flex items-center gap-1.5 mt-0.5" style={{ color: 'var(--muted)' }}>
