@@ -4,6 +4,74 @@ import { getLoanAdmin, getPaymentsAdmin, updateLoanAdmin } from '@/lib/db/loans'
 import { localDateStr } from '@/lib/calculations';
 import { sendWhatsAppPaymentReceived } from '@/lib/whatsapp';
 
+// ─── PATCH: extend / reschedule due_date ─────────────────────────────────────
+// If the new due_date falls after the loan's end_date, the loan's end_date is
+// automatically pushed forward to match — keeping the loan term in sync with
+// the actual last scheduled payment (e.g. 100-day loan → 101 days).
+export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const { id } = await params;
+    const { due_date, loan_id } = await request.json();
+
+    if (!loan_id) return NextResponse.json({ error: 'loan_id required' }, { status: 400 });
+    if (!due_date || !/^\d{4}-\d{2}-\d{2}$/.test(due_date)) {
+      return NextResponse.json({ error: 'due_date required in YYYY-MM-DD format' }, { status: 400 });
+    }
+
+    // Fetch payment and loan in parallel
+    const [{ data: payment, error: fetchErr }, loan] = await Promise.all([
+      db.from('payments').select('*').eq('id', id).eq('loan_id', loan_id).single(),
+      getLoanAdmin(loan_id),
+    ]);
+    if (fetchErr || !payment) return NextResponse.json({ error: 'Payment not found' }, { status: 404 });
+    if (!loan) return NextResponse.json({ error: 'Loan not found' }, { status: 404 });
+
+    // Don't allow rescheduling an already-paid payment
+    if (
+      payment.status === 'paid' ||
+      (Number(payment.paid_amount) >= Number(payment.expected_amount) && Number(payment.expected_amount) > 0)
+    ) {
+      return NextResponse.json({ error: 'Cannot extend a paid payment' }, { status: 400 });
+    }
+
+    const today = localDateStr(new Date());
+    const newStatus = due_date < today ? 'overdue' : 'pending';
+
+    // Update payment due_date
+    const { error: updateErr } = await db.from('payments').update({
+      due_date,
+      status: newStatus,
+      updated_at: new Date().toISOString(),
+    }).eq('id', id);
+    if (updateErr) throw updateErr;
+
+    // If the new due_date pushes past the loan's end_date, extend the loan end_date
+    // so that "total days" stays accurate (e.g. 100-day loan → 101 days).
+    let loanEndDateExtended = false;
+    let newLoanEndDate = loan.endDate;
+    if (due_date > loan.endDate) {
+      await updateLoanAdmin(loan_id, { endDate: due_date });
+      loanEndDateExtended = true;
+      newLoanEndDate = due_date;
+    }
+
+    const { data: updated } = await db.from('payments').select('*').eq('id', id).single();
+    return NextResponse.json({
+      id: updated?.id,
+      loanId: loan_id,
+      dueDate: due_date,
+      status: newStatus,
+      loanEndDateExtended,
+      newLoanEndDate,
+      ...updated,
+    });
+  } catch (e) {
+    console.error(e);
+    return NextResponse.json({ error: 'Failed to extend payment' }, { status: 500 });
+  }
+}
+
+// ─── PUT: collect / mark payment paid ────────────────────────────────────────
 export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;

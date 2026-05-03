@@ -6,7 +6,8 @@ type LoanRow = {
   loanId: string; paymentId: string; planType: 'weekly' | 'daily';
   periodNumber: number; principal: number; expectedAmount: number;
   paidAmount: number; paidDate: string | null; amountDue: number;
-  status: string; dueDate: string; bucket: 'today' | 'overdue' | 'paid-today'; notes: string;
+  status: string; dueDate: string; endDate: string;
+  bucket: 'today' | 'overdue' | 'paid-today'; notes: string;
   // Interest fields (loan-level — same for every payment of the same loan)
   interestAmount: number;
   interestCollected: boolean;
@@ -83,7 +84,8 @@ export async function GET(req: NextRequest) {
           loanId: loan.id, paymentId: p.id, planType: loan.planType,
           periodNumber: p.periodNumber, principal: loan.principal,
           expectedAmount, paidAmount, paidDate: p.paidDate || null,
-          amountDue, status: p.status, dueDate: p.dueDate, bucket, notes: p.notes || '',
+          amountDue, status: p.status, dueDate: p.dueDate, endDate: loan.endDate,
+          bucket, notes: p.notes || '',
           interestAmount: loan.interestAmount ?? 0,
           interestCollected: loan.interestCollected ?? false,
           interestCollectedDate: loan.interestCollectedDate ?? null,

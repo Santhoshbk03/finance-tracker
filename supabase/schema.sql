@@ -62,7 +62,21 @@ create index if not exists payments_due_date_idx        on payments(due_date);
 create index if not exists payments_paid_date_idx       on payments(paid_date);
 create index if not exists payments_status_idx          on payments(status);
 
+-- ─── Capital Entries ─────────────────────────────────────────────────────────
+-- Tracks own capital invested (initial + top-ups) to measure compounding growth.
+create table if not exists capital_entries (
+  id         text primary key default gen_random_uuid()::text,
+  date       date          not null,
+  amount     numeric(15,2) not null check (amount > 0),
+  note       text          not null default '',
+  created_at timestamptz   not null default now(),
+  updated_at timestamptz   not null default now()
+);
+
+create index if not exists capital_entries_date_idx on capital_entries(date);
+
 -- Disable Row Level Security (single-owner admin app — server uses service role key)
-alter table customers disable row level security;
-alter table loans     disable row level security;
-alter table payments  disable row level security;
+alter table customers        disable row level security;
+alter table loans            disable row level security;
+alter table payments         disable row level security;
+alter table capital_entries  disable row level security;

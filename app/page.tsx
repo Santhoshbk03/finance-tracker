@@ -118,47 +118,86 @@ function PaymentRow({ p, href, amountColor, amount, showWa }: {
   );
 }
 
-// ─── Capital entry type (stored in localStorage) ──────────────────────────────
+// ─── Capital entry type (persisted in Supabase capital_entries table) ─────────
 interface CapitalEntry { id: string; date: string; amount: number; note: string }
-
-const CAP_KEY = 'ft_capital_entries';
-function loadEntries(): CapitalEntry[] {
-  try { return JSON.parse(localStorage.getItem(CAP_KEY) || '[]'); } catch { return []; }
-}
-function saveEntries(e: CapitalEntry[]) { localStorage.setItem(CAP_KEY, JSON.stringify(e)); }
 
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Capital tracking
+  // Capital tracking — persisted in Supabase
   const [capEntries, setCapEntries]     = useState<CapitalEntry[]>([]);
+  const [capLoading, setCapLoading]     = useState(false);
+  const [capSaving, setCapSaving]       = useState(false);
+  const [capError, setCapError]         = useState<string | null>(null);
   const [showCapEdit, setShowCapEdit]   = useState(false);
   const [capDate, setCapDate]           = useState('');
   const [capAmount, setCapAmount]       = useState('');
   const [capNote, setCapNote]           = useState('');
   const [editingCapId, setEditingCapId] = useState<string | null>(null);
 
-  useEffect(() => { setCapEntries(loadEntries()); }, []);
+  const loadCapEntries = async () => {
+    setCapLoading(true);
+    setCapError(null);
+    try {
+      const r = await fetch('/api/capital');
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+      setCapEntries(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setCapError(e instanceof Error ? e.message : 'Failed to load capital entries');
+    } finally {
+      setCapLoading(false);
+    }
+  };
+  useEffect(() => { loadCapEntries(); }, []);
 
-  const addCapEntry = () => {
+  const addCapEntry = async () => {
     const amt = parseFloat(capAmount.replace(/,/g, '')) || 0;
     if (!capDate || amt <= 0) return;
-    let next: CapitalEntry[];
-    if (editingCapId) {
-      next = capEntries.map(e => e.id === editingCapId ? { ...e, date: capDate, amount: amt, note: capNote } : e);
-    } else {
-      next = [...capEntries, { id: Date.now().toString(), date: capDate, amount: amt, note: capNote }];
+    setCapSaving(true);
+    setCapError(null);
+    try {
+      if (editingCapId) {
+        const r = await fetch(`/api/capital/${editingCapId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: capDate, amount: amt, note: capNote }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        setCapEntries(prev => prev.map(e => e.id === editingCapId ? data : e).sort((a, b) => a.date.localeCompare(b.date)));
+      } else {
+        const r = await fetch('/api/capital', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: capDate, amount: amt, note: capNote }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        setCapEntries(prev => [...prev, data].sort((a, b) => a.date.localeCompare(b.date)));
+      }
+      // Only close form on success
+      setCapDate(''); setCapAmount(''); setCapNote(''); setEditingCapId(null); setShowCapEdit(false);
+    } catch (e) {
+      setCapError(e instanceof Error ? e.message : 'Failed to save entry');
+    } finally {
+      setCapSaving(false);
     }
-    next.sort((a, b) => a.date.localeCompare(b.date));
-    saveEntries(next);
-    setCapEntries(next);
-    setCapDate(''); setCapAmount(''); setCapNote(''); setEditingCapId(null); setShowCapEdit(false);
   };
 
-  const deleteCapEntry = (id: string) => {
-    const next = capEntries.filter(e => e.id !== id);
-    saveEntries(next); setCapEntries(next);
+  const deleteCapEntry = async (id: string) => {
+    setCapEntries(prev => prev.filter(e => e.id !== id)); // optimistic
+    try {
+      const r = await fetch(`/api/capital/${id}`, { method: 'DELETE' });
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${r.status}`);
+      }
+    } catch (e) {
+      loadCapEntries(); // revert on failure
+      setCapError(e instanceof Error ? e.message : 'Failed to delete entry');
+    }
   };
 
   const startEdit = (e: CapitalEntry) => {
@@ -221,6 +260,19 @@ export default function DashboardPage() {
     if (prev === 0) return null;
     return Math.round(((last - prev) / prev) * 100);
   })();
+
+  // Projections based on average of last 3 months' collections
+  const recentMonths = data?.monthlyData?.slice(-3) || [];
+  const avgMonthlyCollected = recentMonths.length > 0
+    ? recentMonths.reduce((s, m) => s + m.collected, 0) / recentMonths.length
+    : 0;
+  // Monthly return rate on deployed capital
+  const monthlyReturnRate = totalPrincipal > 0 && avgMonthlyCollected > 0
+    ? avgMonthlyCollected / totalPrincipal
+    : 0;
+  const proj3m  = monthlyReturnRate > 0 ? Math.round(totalPrincipal * Math.pow(1 + monthlyReturnRate, 3))  : 0;
+  const proj6m  = monthlyReturnRate > 0 ? Math.round(totalPrincipal * Math.pow(1 + monthlyReturnRate, 6))  : 0;
+  const proj12m = monthlyReturnRate > 0 ? Math.round(totalPrincipal * Math.pow(1 + monthlyReturnRate, 12)) : 0;
 
   return (
     <div className="pb-28 min-h-screen" style={{ background: 'var(--bg)' }}>
@@ -310,14 +362,70 @@ export default function DashboardPage() {
             <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
               <TrendingUp className="w-4 h-4" style={{ color: 'var(--green)' }} />
               Capital &amp; Compounding
+              {capLoading && <Zap className="w-3 h-3 animate-pulse" style={{ color: 'var(--muted)' }} />}
             </h3>
             <button
               onClick={() => { setShowCapEdit(v => !v); setEditingCapId(null); setCapDate(''); setCapAmount(''); setCapNote(''); }}
-              className="text-xs font-semibold px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1"
+              disabled={capLoading}
+              className="text-xs font-semibold px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1 disabled:opacity-50"
               style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)' }}>
               + Add Capital
             </button>
           </div>
+
+          {/* Error banner */}
+          {capError && (() => {
+            const isTableMissing = capError.toLowerCase().includes('capital_entries') || capError.toLowerCase().includes('schema cache');
+            const supabaseUrl = 'https://supabase.com/dashboard/project/uitjykjuldpbsmxnuhis/sql/new';
+            return (
+              <div className="px-4 py-3 flex items-start gap-2"
+                style={{ background: 'rgba(244,63,94,0.08)', borderBottom: '1px solid rgba(244,63,94,0.15)' }}>
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" style={{ color: 'var(--red)' }} />
+                <div className="flex-1 min-w-0">
+                  {isTableMissing ? (
+                    <>
+                      <p className="text-xs font-bold mb-1" style={{ color: '#fb7185' }}>
+                        Table not created yet
+                      </p>
+                      <p className="text-[11px] mb-2 leading-relaxed" style={{ color: 'var(--muted)' }}>
+                        Run this SQL in{' '}
+                        <a href={supabaseUrl} target="_blank" rel="noopener noreferrer"
+                          className="underline font-semibold" style={{ color: 'var(--purple)' }}>
+                          Supabase SQL Editor ↗
+                        </a>
+                        {' '}to create the table:
+                      </p>
+                      <pre className="text-[10px] leading-relaxed rounded-lg p-2 overflow-x-auto select-all"
+                        style={{ background: 'rgba(0,0,0,0.3)', color: '#a5f3fc', border: '1px solid rgba(255,255,255,0.08)' }}>
+{`create table if not exists capital_entries (
+  id text primary key default gen_random_uuid()::text,
+  date date not null,
+  amount numeric(15,2) not null check (amount > 0),
+  note text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table capital_entries disable row level security;`}
+                      </pre>
+                      <button onClick={loadCapEntries} disabled={capLoading}
+                        className="mt-2 text-[11px] font-semibold px-2.5 py-1 rounded-lg flex items-center gap-1 disabled:opacity-50"
+                        style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                        <RefreshCw className={`w-3 h-3 ${capLoading ? 'animate-spin' : ''}`} />
+                        Retry after running SQL
+                      </button>
+                    </>
+                  ) : (
+                    <p className="text-xs font-semibold" style={{ color: '#fb7185' }}>{capError}</p>
+                  )}
+                </div>
+                <button onClick={() => setCapError(null)}
+                  className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded opacity-60 hover:opacity-100"
+                  style={{ color: 'var(--muted)' }}>
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            );
+          })()}
 
           {/* Add / edit form */}
           {showCapEdit && (
@@ -347,12 +455,15 @@ export default function DashboardPage() {
               </div>
               <div className="flex gap-2">
                 <button onClick={() => { setShowCapEdit(false); setEditingCapId(null); }}
-                  className="btn-ghost flex-1 py-2 text-xs justify-center">Cancel</button>
+                  disabled={capSaving}
+                  className="btn-ghost flex-1 py-2 text-xs justify-center disabled:opacity-50">Cancel</button>
                 <button onClick={addCapEntry}
-                  disabled={!capDate || !capAmount}
+                  disabled={!capDate || !capAmount || capSaving}
                   className="flex-1 py-2 rounded-xl text-xs font-bold text-white flex items-center justify-center gap-1.5 disabled:opacity-40"
                   style={{ background: 'linear-gradient(135deg, var(--purple), var(--pink))' }}>
-                  <Check className="w-3.5 h-3.5" strokeWidth={3} />
+                  {capSaving
+                    ? <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    : <Check className="w-3.5 h-3.5" strokeWidth={3} />}
                   {editingCapId ? 'Update' : 'Add Entry'}
                 </button>
               </div>
@@ -499,6 +610,34 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )}
+
+              {/* Projections — based on avg of last 3 months' collections */}
+              {proj12m > 0 && (
+                <div className="rounded-xl p-3" style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.15)' }}>
+                  <p className="text-[10px] uppercase tracking-wide mb-3" style={{ color: '#22d3ee' }}>
+                    Growth Projections
+                    <span className="ml-1 normal-case" style={{ color: 'var(--muted)' }}>
+                      · {(monthlyReturnRate * 100).toFixed(1)}% avg monthly return
+                    </span>
+                  </p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { label: '3 months', value: proj3m, gain: proj3m - totalPrincipal },
+                      { label: '6 months', value: proj6m, gain: proj6m - totalPrincipal },
+                      { label: '1 year',   value: proj12m, gain: proj12m - totalPrincipal },
+                    ].map(({ label, value, gain }) => (
+                      <div key={label} className="text-center">
+                        <p className="text-[10px]" style={{ color: 'var(--muted-2)' }}>{label}</p>
+                        <p className="text-sm font-black" style={{ color: '#22d3ee' }}>{fmt(value)}</p>
+                        <p className="text-[10px] font-semibold" style={{ color: 'var(--green)' }}>+{fmt(gain)}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-[9px] mt-2" style={{ color: 'var(--muted-2)' }}>
+                    Projected if collections continue at current pace. Assumes full reinvestment.
+                  </p>
+                </div>
+              )}
             </div>
           ) : (
             <div className="px-4 py-5 text-center">
@@ -510,26 +649,40 @@ export default function DashboardPage() {
               <p className="text-xs leading-relaxed" style={{ color: 'var(--muted)' }}>
                 Add your initial investments to see how much has been compounded from interest reinvestment.
               </p>
-              <button onClick={() => setShowCapEdit(true)}
-                className="mt-3 text-xs font-semibold px-3 py-1.5 rounded-lg"
-                style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)' }}>
-                + Add first entry
-              </button>
+              <div className="flex items-center justify-center gap-2 mt-3">
+                <button onClick={() => setShowCapEdit(true)}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-lg"
+                  style={{ color: 'var(--purple)', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.2)' }}>
+                  + Add first entry
+                </button>
+                {capError && (
+                  <button onClick={loadCapEntries} disabled={capLoading}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1 disabled:opacity-50"
+                    style={{ color: 'var(--muted)', background: 'var(--glass-bg-2)', border: '1px solid var(--glass-border)' }}>
+                    <RefreshCw className={`w-3 h-3 ${capLoading ? 'animate-spin' : ''}`} />
+                    Retry
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
 
-        {/* ── Today's Snapshot ── */}
-        {(todayDue > 0 || todayCollected > 0) && (() => {
-          const sz = 84, sw = 10, r = (sz - sw) / 2, circ = 2 * Math.PI * r;
+        {/* ── Today & This Week Snapshot ── */}
+        {(todayDue > 0 || todayCollected > 0 || (data?.thisWeek?.expected || 0) > 0) && (() => {
+          const sz = 80, sw = 10, r = (sz - sw) / 2, circ = 2 * Math.PI * r;
           const filled = (todayPct / 100) * circ;
           const color = todayPct >= 100 ? '#10B981' : todayPct >= 60 ? '#f59e0b' : '#8b5cf6';
+          const weekCollected = data?.thisWeek?.collected || 0;
+          const weekExpected  = data?.thisWeek?.expected  || 0;
+          const weekPct = weekExpected > 0 ? Math.min(100, Math.round((weekCollected / weekExpected) * 100)) : 0;
+          const weekColor = weekPct >= 100 ? '#10B981' : weekPct >= 60 ? '#f59e0b' : '#8b5cf6';
           return (
             <div className="card p-4">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
                   <Target className="w-4 h-4" style={{ color: 'var(--amber)' }} />
-                  Today&apos;s Collections
+                  Collections Snapshot
                 </h3>
                 <Link href="/collect"
                   className="text-xs font-semibold flex items-center gap-0.5 px-2.5 py-1 rounded-lg transition-colors"
@@ -537,7 +690,9 @@ export default function DashboardPage() {
                   Collect <ArrowUpRight className="w-3 h-3" />
                 </Link>
               </div>
-              <div className="flex items-center gap-4">
+
+              {/* ── Daily row ── */}
+              <div className="flex items-center gap-4 mb-3">
                 {/* SVG ring */}
                 <div className="relative flex-shrink-0">
                   <svg width={sz} height={sz} className="-rotate-90">
@@ -550,32 +705,68 @@ export default function DashboardPage() {
                     )}
                   </svg>
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <p className="text-lg font-black leading-none" style={{ color }}>{todayPct}%</p>
-                    <p className="text-[9px] uppercase tracking-wide mt-0.5" style={{ color: 'var(--muted)' }}>done</p>
+                    <p className="text-sm font-black leading-none" style={{ color }}>{todayPct}%</p>
+                    <p className="text-[8px] uppercase tracking-wide mt-0.5" style={{ color: 'var(--muted)' }}>today</p>
                   </div>
                 </div>
-                {/* Stats */}
-                <div className="flex-1 min-w-0 space-y-2.5">
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Collected</p>
+                {/* Daily stats */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] uppercase tracking-wide mb-1" style={{ color: 'var(--muted-2)' }}>Today</p>
+                  <div className="flex items-baseline gap-2">
                     <p className="text-xl font-black leading-tight" style={{ color: todayCollected > 0 ? 'var(--green)' : 'var(--muted)' }}>
                       {fmtFull(todayCollected)}
                     </p>
-                  </div>
-                  <div className="h-px" style={{ background: 'var(--glass-border)' }} />
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Expected today</p>
-                    <p className="text-base font-bold leading-tight" style={{ color: 'var(--text)' }}>
-                      {fmtFull(todayDue)}
+                    <p className="text-sm font-bold leading-tight" style={{ color: 'var(--muted)' }}>
+                      / {fmtFull(todayDue)}
                     </p>
                   </div>
+                  <p className="text-[11px] mt-0.5" style={{ color: 'var(--muted)' }}>
+                    {todayPct >= 100 ? '✓ All done!' : `${fmtFull(Math.max(0, todayDue - todayCollected))} remaining`}
+                  </p>
                 </div>
               </div>
-              {todayPct >= 100 && (
+
+              {/* ── Divider ── */}
+              <div className="h-px mb-3" style={{ background: 'var(--glass-border)' }} />
+
+              {/* ── Weekly row ── */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>This week</p>
+                  <span className="text-xs font-bold" style={{ color: weekColor }}>{weekPct}%</span>
+                </div>
+                <div className="flex justify-between text-xs mb-2" style={{ color: 'var(--muted)' }}>
+                  <span>
+                    Collected <strong style={{ color: weekColor }}>{fmtFull(weekCollected)}</strong>
+                  </span>
+                  <span>
+                    Target <strong style={{ color: 'var(--text)' }}>{fmtFull(weekExpected)}</strong>
+                  </span>
+                </div>
+                <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--glass-bg-2)' }}>
+                  <div className="h-full rounded-full transition-all duration-700"
+                    style={{
+                      width: `${weekPct}%`,
+                      background: weekPct >= 100
+                        ? 'linear-gradient(90deg, var(--green), #34d399)'
+                        : weekPct >= 60
+                        ? 'linear-gradient(90deg, var(--amber), #fbbf24)'
+                        : 'linear-gradient(90deg, var(--purple), var(--pink))',
+                      boxShadow: `0 0 10px ${weekPct >= 100 ? 'rgba(16,185,129,0.5)' : weekPct >= 60 ? 'rgba(245,158,11,0.5)' : 'rgba(139,92,246,0.5)'}`,
+                    }} />
+                </div>
+                {weekPct >= 100 && (
+                  <p className="text-[11px] mt-1.5 font-semibold" style={{ color: 'var(--green)' }}>
+                    🎉 Weekly target hit!
+                  </p>
+                )}
+              </div>
+
+              {todayPct >= 100 && weekPct < 100 && (
                 <div className="mt-3 flex items-center gap-2 text-xs font-semibold px-3 py-2 rounded-xl"
                   style={{ background: 'rgba(16,185,129,0.1)', color: 'var(--green)', border: '1px solid rgba(16,185,129,0.2)' }}>
                   <CheckCircle2 className="w-3.5 h-3.5" />
-                  All collections done for today! 🎉
+                  Today&apos;s collections complete! Weekly {weekPct}% done.
                 </div>
               )}
             </div>
@@ -603,37 +794,6 @@ export default function DashboardPage() {
               </div>
             </div>
           ))}
-        </div>
-
-        {/* ── This week progress ── */}
-        <div className="card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold flex items-center gap-2" style={{ color: 'var(--text)' }}>
-              <Zap className="w-4 h-4" style={{ color: 'var(--amber)' }} />
-              This Week&apos;s Collections
-            </h3>
-            <span className="text-sm font-bold"
-              style={{ color: weekProgress === 100 ? 'var(--green)' : 'var(--amber)' }}>
-              {weekProgress}%
-            </span>
-          </div>
-          <div className="flex justify-between text-xs mb-2.5" style={{ color: 'var(--muted)' }}>
-            <span>Collected: <strong style={{ color: 'var(--text)' }}>{fmtFull(data?.thisWeek?.collected || 0)}</strong></span>
-            <span>Target: <strong style={{ color: 'var(--text)' }}>{fmtFull(data?.thisWeek?.expected || 0)}</strong></span>
-          </div>
-          <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--glass-bg-2)' }}>
-            <div className="h-full rounded-full transition-all duration-700"
-              style={{
-                width: `${weekProgress}%`,
-                background: weekProgress === 100
-                  ? 'linear-gradient(90deg, var(--green), #34d399)'
-                  : 'linear-gradient(90deg, var(--amber), #fbbf24)',
-                boxShadow: `0 0 12px ${weekProgress === 100 ? 'rgba(16,185,129,0.5)' : 'rgba(245,158,11,0.5)'}`,
-              }} />
-          </div>
-          <p className="text-xs mt-2" style={{ color: 'var(--muted)' }}>
-            {data?.dueSoon?.length || 0} payment{(data?.dueSoon?.length || 0) !== 1 ? 's' : ''} due this week
-          </p>
         </div>
 
         {/* ── Interest Income Funnel ── */}

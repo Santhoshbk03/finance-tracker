@@ -6,7 +6,7 @@ import {
   ChevronLeft, ChevronRight, Search, Phone, CheckCircle2,
   AlertTriangle, Clock, Loader2, Check, X, IndianRupee,
   Sparkles, Calendar, Undo2, ListChecks, CheckSquare, Square,
-  MessageCircle, TrendingUp, BadgePercent,
+  MessageCircle, TrendingUp, BadgePercent, CalendarClock,
 } from 'lucide-react';
 
 // ─── Types ───
@@ -23,6 +23,7 @@ interface LoanRow {
   amountDue: number;
   status: string;
   dueDate: string;
+  endDate: string;
   bucket: Bucket;
   notes: string;
   interestAmount: number;
@@ -79,7 +80,7 @@ function daysDiff(a: string, b: string) {
   return Math.round((new Date(a + 'T00:00:00').getTime() - new Date(b + 'T00:00:00').getTime()) / 86400000);
 }
 
-type FilterTab = 'pending' | 'overdue' | 'paid' | 'all';
+type FilterTab = 'today' | 'overdue' | 'paid' | 'all';
 
 export default function CollectPage() {
   return (
@@ -95,7 +96,7 @@ export default function CollectPage() {
 
 function CollectInner() {
   const searchParams = useSearchParams();
-  const initialTab = (searchParams.get('tab') as FilterTab | null) || 'pending';
+  const initialTab = (searchParams.get('tab') as FilterTab | null) || 'today';
   const initialDate = searchParams.get('date') || todayStr();
 
   const [date, setDate] = useState(initialDate);
@@ -104,7 +105,7 @@ function CollectInner() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState<FilterTab>(
-    ['pending', 'overdue', 'paid', 'all'].includes(initialTab) ? initialTab : 'pending'
+    ['today', 'overdue', 'paid', 'all'].includes(initialTab) ? initialTab : 'today'
   );
   const [savingMap, setSavingMap] = useState<Record<string, boolean>>({});
   const [editingMap, setEditingMap] = useState<Record<string, string>>({});
@@ -118,6 +119,7 @@ function CollectInner() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [rollSaving, setRollSaving] = useState(false);
   // Interest collection state: loanId → { saving, collected }
   const [interestSavingMap, setInterestSavingMap]   = useState<Record<string, boolean>>({});
   const [interestCollectedMap, setInterestCollectedMap] = useState<Record<string, boolean>>({});
@@ -399,18 +401,129 @@ function CollectInner() {
     return total;
   }, [rows, selectedIds]);
 
-  // Filter rows
+  // Today vs overdue amounts — computed live from rows state so they update
+  // immediately when payments are collected or extended, without a refetch.
+  const todayDueAmount = useMemo(() =>
+    rows.reduce((s, b) => s + b.loans
+      .filter(l => l.bucket === 'today' && l.amountDue > 0)
+      .reduce((ls, l) => ls + l.amountDue, 0), 0), [rows]);
+
+  const overdueDueAmount = useMemo(() =>
+    rows.reduce((s, b) => s + b.loans
+      .filter(l => l.bucket === 'overdue' && l.amountDue > 0)
+      .reduce((ls, l) => ls + l.amountDue, 0), 0), [rows]);
+
+  // Extend / defer a single payment to a new due date.
+  // Key behaviours:
+  //   • If newDueDate > current displayed `date` → the payment is scheduled for
+  //     the future and REMOVED from the current view. It will appear naturally
+  //     on its new date.
+  //   • If newDueDate ≤ `date` → stays in view with updated bucket/status.
+  //   • If newDueDate > loan.endDate → server pushes the loan's end_date too.
+  const extendPayment = useCallback(async (row: LoanRow, newDueDate: string) => {
+    try {
+      const r = await fetch(`/api/payments/${row.paymentId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ due_date: newDueDate, loan_id: row.loanId }),
+      });
+      const result = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(result.error || `HTTP ${r.status}`);
+
+      const loanEndMoved: boolean = result.loanEndDateExtended ?? false;
+      const newLoanEndDate: string = result.newLoanEndDate ?? row.endDate;
+      const isFutureDate = newDueDate > date; // beyond current display date
+
+      setRows(prev => prev.map(borrower => {
+        // Remove borrowers that end up with no loans after filtering
+        const newLoans = borrower.loans
+          .filter(l => {
+            // If deferred to the future, remove from current view
+            if (l.paymentId === row.paymentId && isFutureDate) return false;
+            return true;
+          })
+          .map(l => {
+            if (l.paymentId === row.paymentId) {
+              // Stays in view — update date/bucket/status
+              const newBucket: Bucket = newDueDate < date ? 'overdue' : 'today';
+              const newStatus = newDueDate < date ? 'overdue' : 'pending';
+              return { ...l, dueDate: newDueDate, bucket: newBucket, status: newStatus, endDate: loanEndMoved ? newLoanEndDate : l.endDate };
+            }
+            // Update endDate on sibling rows of the same loan
+            if (loanEndMoved && l.loanId === row.loanId) {
+              return { ...l, endDate: newLoanEndDate };
+            }
+            return l;
+          });
+        const totalDue = newLoans.reduce((s, l) => s + l.amountDue, 0);
+        const overdueCount = newLoans.filter(l => l.bucket === 'overdue').length;
+        return { ...borrower, loans: newLoans, totalDue, overdueCount };
+      }).filter(b => b.loans.length > 0));
+
+      // Update summary overdue count if we deferred an overdue row to the future
+      if (isFutureDate && row.bucket === 'overdue') {
+        setSummary(prev => prev ? { ...prev, overduePayments: Math.max(0, prev.overduePayments - 1) } : prev);
+      }
+
+      const dateStr = new Date(newDueDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+      if (loanEndMoved) {
+        flash('success', `Deferred to ${dateStr} — loan extended`);
+      } else {
+        flash('success', `Deferred to ${dateStr}`);
+      }
+    } catch (e) {
+      flash('error', e instanceof Error ? e.message : 'Failed to defer');
+    }
+  }, [date, flash]);
+
+  // Defer ALL overdue → after their loan's end date (no interest).
+  // Each loan's overdue payments are staggered: end+1, end+2 … so they
+  // don't pile up on the same date. The loan end_date extends accordingly.
+  const deferOverdueToEnd = useCallback(async () => {
+    setRollSaving(true);
+    try {
+      const r = await fetch('/api/payments/defer-overdue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date }),
+      });
+      const result = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(result.error || `HTTP ${r.status}`);
+
+      // Remove all overdue rows from the current view — they're now scheduled
+      // for the future and will appear naturally on their new dates.
+      setRows(prev =>
+        prev
+          .map(borrower => {
+            const newLoans = borrower.loans.filter(l => l.bucket !== 'overdue');
+            const totalDue = newLoans.reduce((s, l) => s + l.amountDue, 0);
+            return { ...borrower, loans: newLoans, totalDue, overdueCount: 0 };
+          })
+          .filter(b => b.loans.length > 0)
+      );
+      setSummary(prev => prev ? { ...prev, overduePayments: 0 } : prev);
+
+      const n = result.deferred ?? 0;
+      const loans = result.loansExtended ?? 0;
+      flash('success', `${n} payment${n !== 1 ? 's' : ''} deferred — ${loans} loan${loans !== 1 ? 's' : ''} extended`);
+      setTab('today');
+    } catch (e) {
+      flash('error', e instanceof Error ? e.message : 'Failed to defer overdue');
+    } finally {
+      setRollSaving(false);
+    }
+  }, [date, flash]);
+
+  // Filter rows — "today" tab is strictly today's pending only (no overdue bleed-in)
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return rows
       .map(r => {
         const loans = r.loans.filter(l => {
-          // "To Collect" = everything that still needs money today OR past-due.
-          // Critical for past-dated imports so overdue rows surface on the default tab.
-          if (tab === 'pending') return (l.bucket === 'today' || l.bucket === 'overdue') && l.amountDue > 0;
+          if (tab === 'today')   return l.bucket === 'today' && l.amountDue > 0;
           if (tab === 'overdue') return l.bucket === 'overdue';
-          if (tab === 'paid') return l.paidAmount >= l.expectedAmount && l.expectedAmount > 0;
-          return true;
+          if (tab === 'paid')    return l.paidAmount >= l.expectedAmount && l.expectedAmount > 0;
+          return true; // 'all'
         });
         return { ...r, loans };
       })
@@ -498,20 +611,26 @@ function CollectInner() {
               background: 'linear-gradient(135deg, rgba(139,92,246,0.15), rgba(236,72,153,0.1))',
               border: '1px solid rgba(139,92,246,0.25)',
             }}>
+            {/* Top row: Today / Overdue / Collected */}
             <div className="grid grid-cols-3 gap-2 mb-2">
               <div>
-                <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Due</p>
-                <p className="text-lg font-black" style={{ color: 'var(--text)' }}>{fmtCompact(summary.totalDue)}</p>
+                <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Due Today</p>
+                <p className="text-base font-black" style={{ color: todayDueAmount > 0 ? 'var(--text)' : 'var(--muted)' }}>
+                  {fmtCompact(todayDueAmount)}
+                </p>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Overdue</p>
+                <p className="text-base font-black" style={{ color: overdueDueAmount > 0 ? 'var(--red)' : 'var(--muted)' }}>
+                  {overdueDueAmount > 0 ? fmtCompact(overdueDueAmount) : '—'}
+                </p>
               </div>
               <div>
                 <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Collected</p>
-                <p className="text-lg font-black" style={{ color: 'var(--green)' }}>{fmtCompact(summary.totalPaid)}</p>
-              </div>
-              <div>
-                <p className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--muted-2)' }}>Borrowers</p>
-                <p className="text-lg font-black" style={{ color: 'var(--text)' }}>{summary.totalBorrowers}</p>
+                <p className="text-base font-black" style={{ color: 'var(--green)' }}>{fmtCompact(summary.totalPaid)}</p>
               </div>
             </div>
+            {/* Progress against today's target only */}
             <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'rgba(255,255,255,0.08)' }}>
               <div className="h-full rounded-full transition-all duration-500"
                 style={{
@@ -522,11 +641,14 @@ function CollectInner() {
             </div>
             <div className="flex justify-between mt-1.5">
               <span className="text-[10px]" style={{ color: 'var(--muted)' }}>{collectedPct}% of target</span>
-              {summary.overduePayments > 0 && (
-                <span className="text-[10px] flex items-center gap-1 font-semibold" style={{ color: 'var(--red)' }}>
-                  <AlertTriangle className="w-2.5 h-2.5" /> {summary.overduePayments} overdue
-                </span>
-              )}
+              <span className="text-[10px]" style={{ color: 'var(--muted)' }}>
+                {summary.totalBorrowers} borrower{summary.totalBorrowers !== 1 ? 's' : ''}
+                {summary.overduePayments > 0 && (
+                  <span className="font-semibold ml-2" style={{ color: 'var(--red)' }}>
+                    · {summary.overduePayments} overdue
+                  </span>
+                )}
+              </span>
             </div>
           </div>
         )}
@@ -548,10 +670,10 @@ function CollectInner() {
         {/* Filter tabs */}
         <div className="flex gap-1.5 overflow-x-auto no-scrollbar -mx-1 px-1">
           {[
-            { key: 'pending', label: 'To Collect', count: (summary?.todayPayments || 0) + (summary?.overduePayments || 0) },
-            { key: 'overdue', label: 'Overdue', count: summary?.overduePayments || 0, danger: true },
-            { key: 'paid', label: 'Paid', count: summary ? summary.totalPayments - (summary.todayPayments + summary.overduePayments) : 0 },
-            { key: 'all', label: 'All', count: summary?.totalPayments || 0 },
+            { key: 'today',   label: 'Today',   count: summary?.todayPayments || 0 },
+            { key: 'overdue', label: 'Overdue',  count: summary?.overduePayments || 0, danger: true },
+            { key: 'paid',    label: 'Paid',     count: summary ? summary.totalPayments - (summary.todayPayments + summary.overduePayments) : 0 },
+            { key: 'all',     label: 'All',      count: summary?.totalPayments || 0 },
           ].map(t => {
             const active = tab === t.key;
             return (
@@ -584,6 +706,77 @@ function CollectInner() {
 
       {/* ─── Body ─── */}
       <div className="p-4">
+
+        {/* Overdue action panel — shown in overdue tab */}
+        {tab === 'overdue' && !loading && (summary?.overduePayments || 0) > 0 && (
+          <div className="mb-4 rounded-2xl p-4"
+            style={{
+              background: 'linear-gradient(135deg, rgba(244,63,94,0.12), rgba(244,63,94,0.06))',
+              border: '1px solid rgba(244,63,94,0.25)',
+            }}>
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                style={{ background: 'rgba(244,63,94,0.15)', border: '1px solid rgba(244,63,94,0.25)' }}>
+                <AlertTriangle className="w-5 h-5" style={{ color: 'var(--red)' }} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold mb-0.5" style={{ color: 'var(--text)' }}>
+                  {summary?.overduePayments} overdue payment{summary?.overduePayments !== 1 ? 's' : ''}
+                </p>
+                <p className="text-xs leading-relaxed mb-3" style={{ color: 'var(--muted)' }}>
+                  From past days where payment wasn&apos;t collected. Defer them after each loan&apos;s end date — staggered per loan, no interest added. Or handle each one individually below.
+                </p>
+                <button
+                  onClick={deferOverdueToEnd}
+                  disabled={rollSaving}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold text-white transition-all active:scale-95 disabled:opacity-60"
+                  style={{
+                    background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                    boxShadow: '0 4px 16px rgba(245,158,11,0.35)',
+                  }}>
+                  {rollSaving
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <CalendarClock className="w-4 h-4" />}
+                  {rollSaving ? 'Deferring…' : `Defer all ${summary?.overduePayments} to after loan end`}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Today tab — nudge when overdue exists */}
+        {tab === 'today' && !loading && (summary?.overduePayments || 0) > 0 && (
+          <button
+            onClick={() => setTab('overdue')}
+            className="w-full mb-3 flex items-center justify-between px-4 py-2.5 rounded-xl transition-colors active:scale-[0.99]"
+            style={{
+              background: 'rgba(244,63,94,0.08)',
+              border: '1px solid rgba(244,63,94,0.2)',
+            }}>
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 flex-shrink-0" style={{ color: 'var(--red)' }} />
+              <span className="text-xs font-semibold" style={{ color: '#fb7185' }}>
+                {summary?.overduePayments} overdue from past days
+              </span>
+            </div>
+            <div className="flex items-center gap-1 text-[11px] font-semibold" style={{ color: '#fb7185' }}>
+              View &amp; fix <ChevronRight className="w-3.5 h-3.5" />
+            </div>
+          </button>
+        )}
+
+        {/* Overdue tab — empty state after rolling */}
+        {tab === 'overdue' && !loading && (summary?.overduePayments || 0) === 0 && filteredRows.length === 0 && (
+          <div className="card p-10 text-center mb-4">
+            <div className="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3"
+              style={{ background: 'rgba(16,185,129,0.12)' }}>
+              <CheckCircle2 className="w-6 h-6" style={{ color: 'var(--green)' }} />
+            </div>
+            <p className="font-bold text-sm mb-1" style={{ color: 'var(--green)' }}>All clear!</p>
+            <p className="text-xs" style={{ color: 'var(--muted)' }}>No overdue payments. Great job keeping the book clean.</p>
+          </div>
+        )}
+
         {fetchError ? (
           <div className="card p-5"
             style={{
@@ -629,6 +822,7 @@ function CollectInner() {
                 setEditingMap={setEditingMap}
                 savingMap={savingMap}
                 onCollect={collect}
+                onExtend={extendPayment}
                 selectionMode={selectionMode}
                 selectedIds={selectedIds}
                 onToggleSelect={toggleSelect}
@@ -737,7 +931,7 @@ function buildWaMessage(borrower: BorrowerRow): string {
 
 // ─── Borrower Card ───
 function BorrowerCard({
-  borrower, date, editingMap, setEditingMap, savingMap, onCollect,
+  borrower, date, editingMap, setEditingMap, savingMap, onCollect, onExtend,
   selectionMode, selectedIds, onToggleSelect, onSelectAllForBorrower,
   interestSavingMap, onCollectInterest,
 }: {
@@ -747,6 +941,7 @@ function BorrowerCard({
   setEditingMap: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   savingMap: Record<string, boolean>;
   onCollect: (row: LoanRow, amount: number) => Promise<void>;
+  onExtend: (row: LoanRow, newDueDate: string) => Promise<void>;
   selectionMode: boolean;
   selectedIds: Set<string>;
   onToggleSelect: (paymentId: string) => void;
@@ -902,6 +1097,7 @@ function BorrowerCard({
             }}
             saving={!!savingMap[row.paymentId]}
             onCollect={onCollect}
+            onExtend={onExtend}
             selectionMode={selectionMode}
             selected={selectedIds.has(row.paymentId)}
             onToggleSelect={onToggleSelect}
@@ -1012,7 +1208,7 @@ function InterestRow({
 
 // ─── Payment Quick Row (one-tap) ───
 function PaymentQuickRow({
-  row, date, editing, setEditing, saving, onCollect,
+  row, date, editing, setEditing, saving, onCollect, onExtend,
   selectionMode, selected, onToggleSelect,
 }: {
   row: LoanRow;
@@ -1021,10 +1217,15 @@ function PaymentQuickRow({
   setEditing: (v: string | undefined) => void;
   saving: boolean;
   onCollect: (row: LoanRow, amount: number) => Promise<void>;
+  onExtend: (row: LoanRow, newDueDate: string) => Promise<void>;
   selectionMode: boolean;
   selected: boolean;
   onToggleSelect: (paymentId: string) => void;
 }) {
+  const [extendMode, setExtendMode] = useState(false);
+  const [extendDate, setExtendDate] = useState('');
+  const [extendSaving, setExtendSaving] = useState(false);
+
   const isFullyPaid = row.paidAmount >= row.expectedAmount && row.expectedAmount > 0;
   const isPartial = row.paidAmount > 0 && row.paidAmount < row.expectedAmount;
   const isEditing = editing !== undefined;
@@ -1037,6 +1238,45 @@ function PaymentQuickRow({
   const handleFull = () => onCollect(row, row.expectedAmount);
   const handleClear = () => onCollect(row, 0);
   const handleSaveEdit = () => onCollect(row, amount);
+
+  const openExtend = () => {
+    // Default to tomorrow (or one week from due date, whichever is later)
+    const baseDate = row.dueDate < date ? date : row.dueDate;
+    const d = new Date(baseDate + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    setExtendDate(iso);
+    setExtendMode(true);
+    setEditing(undefined); // close amount editor if open
+  };
+
+  const saveExtend = async () => {
+    if (!extendDate) return;
+    setExtendSaving(true);
+    try {
+      await onExtend(row, extendDate);
+      setExtendMode(false);
+    } finally {
+      setExtendSaving(false);
+    }
+  };
+
+  // Compute "day after loan end" for overdue one-tap defer
+  const afterEndDate = row.endDate ? (() => {
+    const d = new Date(row.endDate + 'T00:00:00');
+    d.setDate(d.getDate() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })() : null;
+  const afterEndLabel = afterEndDate
+    ? new Date(afterEndDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
+    : null;
+
+  const handleDeferToEnd = async () => {
+    if (!afterEndDate) return;
+    setExtendSaving(true);
+    try { await onExtend(row, afterEndDate); }
+    finally { setExtendSaving(false); }
+  };
 
   // Color scheme
   const bucketStyle = isFullyPaid
@@ -1126,7 +1366,7 @@ function PaymentQuickRow({
         </div>
 
         {/* Action: hidden in selection mode (so the whole row toggles checkbox) */}
-        {selectionMode ? null : !isEditing ? (
+        {selectionMode ? null : !isEditing && !extendMode ? (
           <div className="flex items-center gap-1.5 flex-shrink-0">
             {isFullyPaid ? (
               <button onClick={handleClear} disabled={saving}
@@ -1136,6 +1376,23 @@ function PaymentQuickRow({
               </button>
             ) : (
               <>
+                {/* Overdue: one-tap defer to after loan end. Today: custom extend picker */}
+                {row.bucket === 'overdue' && afterEndDate ? (
+                  <button onClick={handleDeferToEnd} disabled={extendSaving || saving}
+                    title={`Defer to ${afterEndLabel} (after loan end, no interest)`}
+                    className="px-2.5 py-2 rounded-lg text-[11px] font-bold transition-all disabled:opacity-50 active:scale-95 flex items-center gap-1"
+                    style={{ color: '#f59e0b', background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.25)' }}>
+                    {extendSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <CalendarClock className="w-3 h-3" />}
+                    Defer
+                  </button>
+                ) : (
+                  <button onClick={openExtend} disabled={saving || extendSaving}
+                    title="Extend due date"
+                    className="px-2 py-2 rounded-lg text-xs font-bold transition-colors disabled:opacity-50"
+                    style={{ color: '#f59e0b', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.2)' }}>
+                    <CalendarClock className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <button onClick={() => setEditing(isPartial ? String(row.paidAmount) : String(row.expectedAmount))}
                   disabled={saving}
                   className="px-2.5 py-2 rounded-lg text-xs font-bold transition-colors disabled:opacity-50"
@@ -1154,9 +1411,18 @@ function PaymentQuickRow({
               </>
             )}
           </div>
-        ) : (
+        ) : isEditing ? (
           <div className="flex items-center gap-1.5 flex-shrink-0">
             <button onClick={() => setEditing(undefined)} disabled={saving}
+              className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors disabled:opacity-50"
+              style={{ background: 'var(--glass-bg-2)', border: '1px solid var(--glass-border)', color: 'var(--muted)' }}>
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ) : (
+          /* extend mode: close button */
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <button onClick={() => setExtendMode(false)} disabled={extendSaving}
               className="w-9 h-9 rounded-lg flex items-center justify-center transition-colors disabled:opacity-50"
               style={{ background: 'var(--glass-bg-2)', border: '1px solid var(--glass-border)', color: 'var(--muted)' }}>
               <X className="w-3.5 h-3.5" />
@@ -1196,6 +1462,111 @@ function PaymentQuickRow({
           </button>
         </div>
       )}
+
+      {/* Extend due-date picker — shows when user taps the calendar-clock button */}
+      {extendMode && !selectionMode && (() => {
+        // afterEndDate / afterEndLabel are already computed at component level
+        const endDateLabel = row.endDate
+          ? new Date(row.endDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
+          : null;
+
+        return (
+          <div className="mt-3 rounded-xl p-3"
+            style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.2)' }}>
+            <div className="flex items-center gap-1.5 mb-2.5">
+              <CalendarClock className="w-3.5 h-3.5" style={{ color: '#f59e0b' }} />
+              <span className="text-[11px] font-semibold" style={{ color: '#f59e0b' }}>
+                Extend due date
+              </span>
+              <span className="text-[10px]" style={{ color: 'var(--muted)' }}>
+                · was {new Date(row.dueDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+              </span>
+            </div>
+
+            {/* Quick presets */}
+            <div className="flex flex-wrap gap-1.5 mb-2.5">
+              {/* +1 week */}
+              {(() => {
+                const d = new Date(date + 'T00:00:00');
+                d.setDate(d.getDate() + 7);
+                const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                return (
+                  <button key="+7" onClick={() => setExtendDate(iso)}
+                    className="text-[10px] font-bold px-2 py-1 rounded-lg transition-colors"
+                    style={{
+                      background: extendDate === iso ? 'rgba(245,158,11,0.3)' : 'rgba(245,158,11,0.1)',
+                      color: '#f59e0b',
+                      border: `1px solid ${extendDate === iso ? 'rgba(245,158,11,0.5)' : 'rgba(245,158,11,0.2)'}`,
+                    }}>
+                    +1 week
+                  </button>
+                );
+              })()}
+              {/* +2 weeks */}
+              {(() => {
+                const d = new Date(date + 'T00:00:00');
+                d.setDate(d.getDate() + 14);
+                const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                return (
+                  <button key="+14" onClick={() => setExtendDate(iso)}
+                    className="text-[10px] font-bold px-2 py-1 rounded-lg transition-colors"
+                    style={{
+                      background: extendDate === iso ? 'rgba(245,158,11,0.3)' : 'rgba(245,158,11,0.1)',
+                      color: '#f59e0b',
+                      border: `1px solid ${extendDate === iso ? 'rgba(245,158,11,0.5)' : 'rgba(245,158,11,0.2)'}`,
+                    }}>
+                    +2 weeks
+                  </button>
+                );
+              })()}
+              {/* After loan end date */}
+              {afterEndDate && (
+                <button onClick={() => setExtendDate(afterEndDate)}
+                  className="text-[10px] font-bold px-2 py-1 rounded-lg transition-colors flex items-center gap-1"
+                  style={{
+                    background: extendDate === afterEndDate ? 'rgba(139,92,246,0.3)' : 'rgba(139,92,246,0.1)',
+                    color: 'var(--purple)',
+                    border: `1px solid ${extendDate === afterEndDate ? 'rgba(139,92,246,0.5)' : 'rgba(139,92,246,0.2)'}`,
+                  }}>
+                  After end
+                  <span style={{ color: 'var(--muted)', fontWeight: 400 }}>({endDateLabel}+1)</span>
+                </button>
+              )}
+            </div>
+
+            {/* Date picker + save */}
+            <div className="flex items-center gap-2">
+              <input
+                type="date"
+                value={extendDate}
+                onChange={e => setExtendDate(e.target.value)}
+                min={date}
+                className="input py-2 text-sm font-bold flex-1"
+              />
+              <button
+                onClick={saveExtend}
+                disabled={extendSaving || !extendDate}
+                className="px-3 py-2 rounded-lg text-xs font-bold text-white transition-all disabled:opacity-50 active:scale-95 flex items-center gap-1"
+                style={{
+                  background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                  boxShadow: '0 2px 10px rgba(245,158,11,0.35)',
+                }}>
+                {extendSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" strokeWidth={3} />}
+                Set
+              </button>
+            </div>
+            {extendDate && row.endDate && extendDate > row.endDate && (
+              <p className="text-[10px] mt-1.5 font-semibold flex items-center gap-1" style={{ color: 'var(--purple)' }}>
+                <CalendarClock className="w-3 h-3 flex-shrink-0" />
+                Loan end date will extend from{' '}
+                {new Date(row.endDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                {' '}→{' '}
+                {new Date(extendDate + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+              </p>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1206,26 +1577,26 @@ function EmptyState({ tab, search, isToday }: { tab: FilterTab; search: string; 
     return (
       <div className="card p-10 text-center">
         <Search className="w-10 h-10 mx-auto mb-3" style={{ color: 'var(--muted-2)' }} />
-        <p className="text-sm font-semibold" style={{ color: 'var(--muted)' }}>No borrower matches "{search}"</p>
+        <p className="text-sm font-semibold" style={{ color: 'var(--muted)' }}>No borrower matches &ldquo;{search}&rdquo;</p>
       </div>
     );
   }
   const msg =
-    tab === 'pending' ? (isToday ? 'Nothing to collect — all caught up!' : 'Nothing due or overdue for this date')
-    : tab === 'overdue' ? 'No overdue payments — all caught up!'
-    : tab === 'paid' ? 'No collections recorded yet'
+    tab === 'today'   ? (isToday ? 'Nothing due today — all caught up!' : 'Nothing due on this date')
+    : tab === 'overdue' ? 'No overdue payments!'
+    : tab === 'paid'    ? 'No collections recorded yet'
     : 'No data for this day';
   const sub =
-    tab === 'pending' ? 'Both today and overdue appear here.'
-    : tab === 'overdue' ? 'Good job keeping your book clean.'
-    : tab === 'paid' ? 'Collections will appear here as you mark them paid.'
+    tab === 'today'   ? (isToday ? 'Check the Overdue tab if there are past dues.' : 'Try a different date.')
+    : tab === 'overdue' ? 'Great job keeping your book clean.'
+    : tab === 'paid'    ? 'Collections will appear here as you mark them paid.'
     : 'Try a different date';
 
   return (
     <div className="card p-12 text-center">
       <div className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3"
-        style={{ background: tab === 'overdue' ? 'rgba(16,185,129,0.12)' : 'var(--glass-bg-2)' }}>
-        {tab === 'overdue'
+        style={{ background: (tab === 'overdue' || tab === 'today') ? 'rgba(16,185,129,0.12)' : 'var(--glass-bg-2)' }}>
+        {(tab === 'overdue' || tab === 'today')
           ? <CheckCircle2 className="w-7 h-7" style={{ color: 'var(--green)' }} />
           : <IndianRupee className="w-6 h-6" style={{ color: 'var(--muted-2)' }} />}
       </div>
